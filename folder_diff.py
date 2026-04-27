@@ -198,12 +198,22 @@ def _is_temp_file(name):
         return True
     return False
 
-def file_hash(path, buf=65536):
-    h = hashlib.sha256()
+def file_hash(path, buf=1024 * 1024):
+    h = hashlib.blake2b(digest_size=16)
     try:
         with open(path, "rb") as f:
             while chunk := f.read(buf):
                 h.update(chunk)
+        return h.hexdigest()
+    except (OSError, PermissionError):
+        return None
+
+
+def file_quick_hash(path, sample=65536):
+    h = hashlib.blake2b(digest_size=16)
+    try:
+        with open(path, "rb") as f:
+            h.update(f.read(sample))
         return h.hexdigest()
     except (OSError, PermissionError):
         return None
@@ -236,19 +246,58 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb):
 
     only_a   = {k: files_a[k] for k in keys_a - keys_b}
     only_b   = {k: files_b[k] for k in keys_b - keys_a}
-    common   = keys_a & keys_b
+    common   = sorted(keys_a & keys_b)
 
-    total = len(common)
-    done  = [0]
     different = {}
+    total = len(common)
+    if total == 0:
+        done_cb(only_a, only_b, different)
+        return
 
-    for rel in sorted(common):
+    # Stage 0: skip files whose sizes differ (cheap, no read)
+    size_match = []
+    for rel in common:
+        try:
+            if os.path.getsize(files_a[rel]) != os.path.getsize(files_b[rel]):
+                different[rel] = (files_a[rel], files_b[rel])
+            else:
+                size_match.append(rel)
+        except OSError:
+            pass
+
+    # Stage 1: quick hash on first 64KB
+    quick_match = []
+    done = 0
+    last = 0
+    n_quick = len(size_match)
+    overall_total = n_quick * 2 or 1
+    for rel in size_match:
+        qa = file_quick_hash(files_a[rel])
+        qb = file_quick_hash(files_b[rel])
+        if qa and qb:
+            if qa != qb:
+                different[rel] = (files_a[rel], files_b[rel])
+            else:
+                quick_match.append(rel)
+        done += 1
+        if done - last >= 25 or done == n_quick:
+            progress_cb(done, overall_total, rel)
+            last = done
+
+    # Stage 2: full hash only on quick-hash matches
+    n_full = len(quick_match)
+    overall_total = n_quick + n_full or 1
+    last = 0
+    full_done = 0
+    for rel in quick_match:
         ha = file_hash(files_a[rel])
         hb = file_hash(files_b[rel])
         if ha and hb and ha != hb:
             different[rel] = (files_a[rel], files_b[rel])
-        done[0] += 1
-        progress_cb(done[0], total, rel)
+        full_done += 1
+        if full_done - last >= 25 or full_done == n_full:
+            progress_cb(n_quick + full_done, overall_total, rel)
+            last = full_done
 
     done_cb(only_a, only_b, different)
 
@@ -258,7 +307,7 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb):
 class FolderDiffApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Folder Differences")
+        self.title("Folder Differences v1")
         self.geometry("1300x800")
         self.minsize(1000, 600)
         self.configure(bg=BG)
@@ -280,6 +329,8 @@ class FolderDiffApp(tk.Tk):
         self._pdf_var    = tk.BooleanVar(value=True)
         self._size_a     = tk.StringVar(value="")
         self._size_b     = tk.StringVar(value="")
+        self._iid_data   = {}   # iid -> dict (status, name, rel, data, tags)
+        self._selectable_iids = []
 
         self._build_ui()
 
@@ -573,6 +624,8 @@ class FolderDiffApp(tk.Tk):
         self._different = different
 
         self._tree.delete(*self._tree.get_children())
+        self._iid_data = {}
+        self._selectable_iids = []
         self._progress["value"] = 100
         self._progress_label.config(text="")
         self._compare_btn.config(text="  Compare Folders  ")
@@ -590,58 +643,82 @@ class FolderDiffApp(tk.Tk):
                                tags=("section",))
             return
 
+        # Build all rows up front, insert in batches
+        rows = []
         if only_a:
-            self._tree.insert("", "end",
-                               values=(f"── Only in Folder 1  ({len(only_a)} files)", "", "", ""),
-                               tags=("section",))
+            rows.append(("section",
+                         (f"── Only in Folder 1  ({len(only_a)} files)", "", "", "")))
             for rel, abs_p in sorted(only_a.items()):
-                self._tree.insert("", "end",
-                                   values=("Only in Folder 1",
-                                           Path(rel).name, rel, abs_p),
-                                   tags=("only_a",))
-
+                rows.append(("only_a",
+                             ("Only in Folder 1", Path(rel).name, rel, abs_p)))
         if only_b:
-            self._tree.insert("", "end",
-                               values=(f"── Only in Folder 2  ({len(only_b)} files)", "", "", ""),
-                               tags=("section",))
+            rows.append(("section",
+                         (f"── Only in Folder 2  ({len(only_b)} files)", "", "", "")))
             for rel, abs_p in sorted(only_b.items()):
-                self._tree.insert("", "end",
-                                   values=("Only in Folder 2",
-                                           Path(rel).name, rel, abs_p),
-                                   tags=("only_b",))
-
+                rows.append(("only_b",
+                             ("Only in Folder 2", Path(rel).name, rel, abs_p)))
         if different:
-            self._tree.insert("", "end",
-                               values=(f"── Differences  ({len(different)} files)", "", "", ""),
-                               tags=("section",))
+            rows.append(("section",
+                         (f"── Differences  ({len(different)} files)", "", "", "")))
             for rel, (abs_a, abs_b) in sorted(different.items()):
-                self._tree.insert("", "end",
-                                   values=("Differences",
-                                           Path(rel).name, rel,
-                                           f"{abs_a}||{abs_b}"),
-                                   tags=("diff",))
+                rows.append(("diff",
+                             ("Differences", Path(rel).name, rel, f"{abs_a}||{abs_b}")))
+
+        self._progress_label.config(text=f"Loading… 0 / {len(rows)}")
+        self.update_idletasks()
+        self.after(1, lambda: self._insert_rows_batch(rows, 0))
+
+    def _insert_rows_batch(self, rows, start, chunk=100):
+        end = min(start + chunk, len(rows))
+        for tag, values in rows[start:end]:
+            iid = self._tree.insert("", "end", values=values, tags=(tag,))
+            if tag != "section":
+                self._iid_data[iid] = {
+                    "status": values[0], "name": values[1],
+                    "rel": values[2], "data": values[3], "tag": tag,
+                }
+                self._selectable_iids.append(iid)
+        if end < len(rows):
+            self._progress_label.config(text=f"Loading… {end} / {len(rows)}")
+            self.update_idletasks()
+            self.after(1, lambda: self._insert_rows_batch(rows, end, chunk))
+        else:
+            self._progress_label.config(text="")
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
     def _select_all(self):
-        items = [iid for iid in self._tree.get_children()
-                 if "section" not in self._tree.item(iid, "tags")]
-        self._tree.selection_set(items)
+        self._tree.selection_set([])
+        targets = list(self._selectable_iids)
+        if not targets:
+            return
+        self._progress_label.config(text=f"Selecting… 0 / {len(targets)}")
+        self.update_idletasks()
+        self.after(1, lambda: self._batch_select(targets, 0))
+
+    def _batch_select(self, iids, start, chunk=100):
+        end = min(start + chunk, len(iids))
+        self._tree.selection_add(*iids[start:end])
+        if end < len(iids):
+            self._progress_label.config(text=f"Selecting… {end} / {len(iids)}")
+            self.update_idletasks()
+            self.after(1, lambda: self._batch_select(iids, end, chunk))
+        else:
+            self._progress_label.config(text=f"Selected {len(iids)} files.")
 
     def _get_selected_items(self):
         result = []
         for iid in self._tree.selection():
-            vals = self._tree.item(iid, "values")
-            tags = self._tree.item(iid, "tags")
-            if not vals or "section" in tags:
+            d = self._iid_data.get(iid)
+            if not d:
                 continue
             result.append({
                 "iid":    iid,
-                "status": vals[0],
-                "name":   vals[1],
-                "rel":    vals[2],
-                "data":   vals[3],
-                "tags":   tags,
+                "status": d["status"],
+                "name":   d["name"],
+                "rel":    d["rel"],
+                "data":   d["data"],
+                "tags":   (d["tag"],),
             })
         return result
 
@@ -713,25 +790,40 @@ class FolderDiffApp(tk.Tk):
         ):
             return
 
-        errors  = []
-        copied  = []
+        self._progress["value"] = 0
+        self._progress_label.config(text=f"Copying… 0 / {len(copyable)}")
+        self.update_idletasks()
 
-        for rel, src, _ in copyable:
-            dst = os.path.join(dest_folder, rel)
-            try:
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
-                copied.append({"src": src, "dst": dst, "direction": direction})
-            except Exception as e:
-                errors.append(f"{Path(src).name}: {e}")
+        def worker():
+            errors = []
+            copied = []
+            total = len(copyable)
+            for i, (rel, src, _) in enumerate(copyable, 1):
+                dst = os.path.join(dest_folder, rel)
+                try:
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                    copied.append({"src": src, "dst": dst, "direction": direction})
+                except Exception as e:
+                    errors.append(f"{Path(src).name}: {e}")
+                if i % 5 == 0 or i == total:
+                    self.after(0, lambda done=i, t=total:
+                        (self._progress.configure(value=(done/t)*100),
+                         self._progress_label.config(text=f"Copying… {done} / {t}")))
 
-        # Show copy result first
+            self.after(0, lambda: self._after_copy(copied, errors, dest_label))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _after_copy(self, copied, errors, dest_label):
+        self._progress["value"] = 100
+        self._progress_label.config(text="")
+
         if errors:
             messagebox.showerror("Some errors", "\n".join(errors[:5]))
         else:
             messagebox.showinfo("Done", f"{len(copied)} file(s) copied to {dest_label}.")
 
-        # Generate PDF in background then open it
         if self._pdf_var.get() and copied:
             def make_pdf():
                 try:
@@ -750,7 +842,6 @@ class FolderDiffApp(tk.Tk):
                         messagebox.showwarning("PDF error", err))
             threading.Thread(target=make_pdf, daemon=True).start()
 
-        # Refresh compare
         self._start_compare()
 
 
