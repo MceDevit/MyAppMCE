@@ -357,6 +357,7 @@ class DuplicateFinderApp(tk.Tk):
 
         self._selected_folder = tk.StringVar(value="")
         self._dupes = {}
+        self._delete_iids = []
         self._pdf_var = tk.BooleanVar(value=True)
 
         self._build_ui()
@@ -540,6 +541,7 @@ class DuplicateFinderApp(tk.Tk):
             return
 
         self._tree.delete(*self._tree.get_children())
+        self._delete_iids = []
         self._clear_stats()
         self._progress["value"] = 0
         self._progress_label.config(text="Scanning...")
@@ -584,28 +586,47 @@ class DuplicateFinderApp(tk.Tk):
                                tags=("header",))
             return
 
+        rows = []
         for idx, (h, paths) in enumerate(dupes.items()):
             tag = "group_a" if idx % 2 == 0 else "group_b"
             sz = os.path.getsize(paths[0])
-            self._tree.insert("", "end",
-                               values=("", f"-- Group {idx+1}  ({len(paths)} files, {self._fmt_size(sz)} each)", "", ""),
-                               tags=("header",))
+            rows.append(("header", ("", f"-- Group {idx+1}  ({len(paths)} files, {self._fmt_size(sz)} each)", "", "")))
             for i, fp in enumerate(paths):
-                self._tree.insert("", "end",
-                                   values=("keep" if i == 0 else "delete",
-                                           Path(fp).name, self._fmt_size(sz), fp),
-                                   tags=(tag,))
+                rows.append((tag, ("keep" if i == 0 else "delete",
+                                   Path(fp).name, self._fmt_size(sz), fp)))
+
+        self._delete_iids = []
+        self._insert_rows_batch(rows, 0)
+
+    def _insert_rows_batch(self, rows, start, chunk=500):
+        end = min(start + chunk, len(rows))
+        for tag, values in rows[start:end]:
+            iid = self._tree.insert("", "end", values=values, tags=(tag,))
+            if values[0] == "delete":
+                self._delete_iids.append(iid)
+        if end < len(rows):
+            self._progress_label.config(text=f"Loading results… {end} / {len(rows)}")
+            self.after(5, lambda: self._insert_rows_batch(rows, end, chunk))
+        else:
+            self._progress_label.config(text="")
 
     def _select_all_dupes(self):
-        self._tree.selection_remove(*self._tree.get_children())
-        self._tree.selection_set([
-            iid for iid in self._tree.get_children()
-            if self._tree.item(iid, "values") and
-               self._tree.item(iid, "values")[0] == "delete"
-        ])
+        self._tree.selection_set([])
+        targets = getattr(self, "_delete_iids", [])
+        if targets:
+            self._batch_select(targets, 0)
+
+    def _batch_select(self, iids, start, chunk=500):
+        end = min(start + chunk, len(iids))
+        self._tree.selection_add(*iids[start:end])
+        if end < len(iids):
+            self._progress_label.config(text=f"Selecting… {end} / {len(iids)}")
+            self.after(5, lambda: self._batch_select(iids, end, chunk))
+        else:
+            self._progress_label.config(text="")
 
     def _deselect_all(self):
-        self._tree.selection_remove(*self._tree.get_children())
+        self._tree.selection_set([])
 
     def _get_selected_paths(self):
         return [
