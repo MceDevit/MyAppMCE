@@ -16,18 +16,22 @@ import subprocess
 import shutil
 import datetime
 
-# ── Colour palette — Modern light grey ──────────────────────────────────────
-BG        = "#f0f2f5"   # light grey background
-SURFACE   = "#ffffff"   # white panels
-CARD      = "#e8eaed"   # slightly darker grey cards
-ACCENT    = "#1a73e8"   # Google-blue — vivid, modern
-ACCENT2   = "#0d47a1"   # deeper blue for highlights
-DANGER    = "#d32f2f"   # strong red — good contrast on light
-SUCCESS   = "#2e7d32"   # deep green — readable on light
-MUTED     = "#5f6368"   # Google grey — AA contrast on white
-FG        = "#1c1b1f"   # near-black — max contrast
-FG_DIM    = "#444746"   # dark grey — still very readable
-BORDER    = "#c4c7c5"   # subtle grey border
+# ── Colour palette — Black / Blue / Yellow / Orange ─────────────────────────
+BG        = "#0a0a0a"   # near-black background
+SURFACE   = "#141414"   # dark surface
+CARD      = "#1e1e1e"   # slightly lighter card
+ACCENT    = "#ff6d00"   # vivid orange — neutral UI accent
+ACCENT2   = "#ffab40"   # lighter orange for hover/highlights
+DANGER    = "#ff1744"   # bright red
+SUCCESS   = "#00e676"   # neon green
+MUTED     = "#757575"   # mid grey
+FG        = "#f5f5f5"   # near-white
+FG_DIM    = "#9e9e9e"   # grey — secondary text
+BORDER    = "#2c2c2c"   # subtle dark border
+
+# Per-role colours
+KEEP      = "#2979ff"   # electric blue — kept original
+DELETE    = "#ffd600"   # yellow        — duplicate to delete
 
 FONT_TITLE  = ("SF Pro Display", 22, "bold")
 FONT_LABEL  = ("SF Pro Text",    13)
@@ -378,7 +382,7 @@ def find_duplicates(folder, progress_cb, done_cb):
 class DuplicateFinderApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Duplicate Finder v4")
+        self.title("Duplicate Finder v5")
         self.geometry("1200x780")
         self.minsize(1000, 600)
         self.configure(bg=BG)
@@ -482,10 +486,13 @@ class DuplicateFinderApp(tk.Tk):
         hsb.pack(side="bottom", fill="x")
         self._tree.pack(side="left", fill="both", expand=True)
 
-        self._tree.tag_configure("group_a", background=SURFACE)
-        self._tree.tag_configure("group_b", background=CARD)
-        self._tree.tag_configure("header", background="#d2e3fc",
-                                  foreground=ACCENT2, font=(*FONT_SMALL[:2], "bold"))
+        self._tree.tag_configure("keep_a",   background=SURFACE, foreground=KEEP)
+        self._tree.tag_configure("keep_b",   background=CARD,    foreground=KEEP)
+        self._tree.tag_configure("delete_a", background=SURFACE, foreground=DELETE)
+        self._tree.tag_configure("delete_b", background=CARD,    foreground=DELETE)
+        self._tree.tag_configure("header",   background="#2a1500",
+                                  foreground=ACCENT,
+                                  font=(*FONT_SMALL[:2], "bold"))
 
         # Action bar
         bar = tk.Frame(self, bg=BG)
@@ -623,12 +630,13 @@ class DuplicateFinderApp(tk.Tk):
 
         rows = []
         for idx, (h, paths) in enumerate(dupes.items()):
-            tag = "group_a" if idx % 2 == 0 else "group_b"
+            suffix = "_a" if idx % 2 == 0 else "_b"
             sz = os.path.getsize(paths[0])
             rows.append(("header", ("", f"-- Group {idx+1}  ({len(paths)} files, {self._fmt_size(sz)} each)", "", "")))
             for i, fp in enumerate(paths):
-                rows.append((tag, ("keep" if i == 0 else "delete",
-                                   Path(fp).name, self._fmt_size(sz), fp)))
+                role = "keep" if i == 0 else "delete"
+                rows.append((role + suffix,
+                             (role, Path(fp).name, self._fmt_size(sz), fp)))
 
         self._delete_iids = []
         self._iid_path = {}

@@ -20,8 +20,8 @@ import datetime
 BG        = "#0a0a0a"   # near-black background
 SURFACE   = "#141414"   # dark surface
 CARD      = "#1e1e1e"   # slightly lighter card
-ACCENT    = "#ffd600"   # vivid yellow — primary accent
-ACCENT2   = "#ffe57f"   # lighter yellow for hover/highlights
+ACCENT    = "#ff6d00"   # vivid orange — neutral UI accent (not folder 1 or 2)
+ACCENT2   = "#ffab40"   # lighter orange for hover/highlights
 DANGER    = "#ff1744"   # bright red — good on dark
 SUCCESS   = "#00e676"   # neon green — readable on dark
 MUTED     = "#757575"   # mid grey
@@ -29,10 +29,10 @@ FG        = "#f5f5f5"   # near-white — max contrast
 FG_DIM    = "#9e9e9e"   # grey — secondary text
 BORDER    = "#2c2c2c"   # subtle dark border
 
-# Diff-specific colours
-ONLY_A    = "#2979ff"   # electric blue  — only in folder 1
-ONLY_B    = "#ffd600"   # yellow         — only in folder 2
-DIFF      = "#ff6d00"   # vivid orange   — different content
+# Per-folder colours
+ONLY_A    = "#2979ff"   # electric blue — folder 1
+ONLY_B    = "#ffd600"   # yellow        — folder 2
+DIFF      = "#ff6d00"   # vivid orange  — differences / other
 
 FONT_TITLE = ("Verdana", 22, "bold")
 FONT_LABEL = ("Verdana", 13)
@@ -307,7 +307,7 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb):
 class FolderDiffApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Folder Differences v1")
+        self.title("Folder Differences v2")
         self.geometry("1300x800")
         self.minsize(1000, 600)
         self.configure(bg=BG)
@@ -431,7 +431,20 @@ class FolderDiffApp(tk.Tk):
         self._tree.tag_configure("only_a",  foreground=ONLY_A)
         self._tree.tag_configure("only_b",  foreground=ONLY_B)
         self._tree.tag_configure("diff",    foreground=DIFF)
-        self._tree.tag_configure("section", background="#1a1a00",
+        self._tree.tag_configure("section_a",
+                                  background="#0a1530",
+                                  foreground=ONLY_A,
+                                  font=(*FONT_SMALL[:2], "bold"))
+        self._tree.tag_configure("section_b",
+                                  background="#1a1a00",
+                                  foreground=ONLY_B,
+                                  font=(*FONT_SMALL[:2], "bold"))
+        self._tree.tag_configure("section_diff",
+                                  background="#2a1500",
+                                  foreground=DIFF,
+                                  font=(*FONT_SMALL[:2], "bold"))
+        self._tree.tag_configure("section",
+                                  background="#1a1a1a",
                                   foreground=ACCENT,
                                   font=(*FONT_SMALL[:2], "bold"))
 
@@ -496,16 +509,16 @@ class FolderDiffApp(tk.Tk):
         indicator.pack_propagate(False)
 
         tk.Label(row, text=label, font=FONT_LABEL,
-                 bg=BG, fg=FG, width=8, anchor="w").pack(side="left")
+                 bg=BG, fg=color, width=8, anchor="w").pack(side="left")
 
         entry = tk.Entry(row, textvariable=var,
                          font=FONT_MONO, bg=CARD, fg=FG, relief="flat",
-                         insertbackground=ACCENT, highlightthickness=1,
-                         highlightbackground=BORDER, highlightcolor=ACCENT)
+                         insertbackground=color, highlightthickness=1,
+                         highlightbackground=BORDER, highlightcolor=color)
         entry.pack(side="left", fill="x", expand=True, ipady=7, padx=(8, 10))
 
         tk.Label(row, textvariable=size_var, font=FONT_SMALL,
-                 bg=BG, fg=ACCENT, width=10, anchor="e").pack(side="left", padx=(0, 8))
+                 bg=BG, fg=color, width=10, anchor="e").pack(side="left", padx=(0, 8))
 
         self._make_btn(row, "Browse…", browse_cmd,
                        bg=CARD, fg=FG, pad=(14, 0)).pack(side="left")
@@ -646,19 +659,19 @@ class FolderDiffApp(tk.Tk):
         # Build all rows up front, insert in batches
         rows = []
         if only_a:
-            rows.append(("section",
+            rows.append(("section_a",
                          (f"── Only in Folder 1  ({len(only_a)} files)", "", "", "")))
             for rel, abs_p in sorted(only_a.items()):
                 rows.append(("only_a",
                              ("Only in Folder 1", Path(rel).name, rel, abs_p)))
         if only_b:
-            rows.append(("section",
+            rows.append(("section_b",
                          (f"── Only in Folder 2  ({len(only_b)} files)", "", "", "")))
             for rel, abs_p in sorted(only_b.items()):
                 rows.append(("only_b",
                              ("Only in Folder 2", Path(rel).name, rel, abs_p)))
         if different:
-            rows.append(("section",
+            rows.append(("section_diff",
                          (f"── Differences  ({len(different)} files)", "", "", "")))
             for rel, (abs_a, abs_b) in sorted(different.items()):
                 rows.append(("diff",
@@ -672,7 +685,7 @@ class FolderDiffApp(tk.Tk):
         end = min(start + chunk, len(rows))
         for tag, values in rows[start:end]:
             iid = self._tree.insert("", "end", values=values, tags=(tag,))
-            if tag != "section":
+            if not tag.startswith("section"):
                 self._iid_data[iid] = {
                     "status": values[0], "name": values[1],
                     "rel": values[2], "data": values[3], "tag": tag,
