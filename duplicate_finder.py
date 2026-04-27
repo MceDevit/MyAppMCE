@@ -274,12 +274,22 @@ def get_display_path(path):
     """Return the path as-is."""
     return path
 
-def file_hash(path, buf=65536):
-    h = hashlib.sha256()
+def file_hash(path, buf=1024 * 1024):
+    h = hashlib.blake2b(digest_size=16)
     try:
         with open(path, "rb") as f:
             while chunk := f.read(buf):
                 h.update(chunk)
+        return h.hexdigest()
+    except (OSError, PermissionError):
+        return None
+
+
+def file_quick_hash(path, sample=65536):
+    h = hashlib.blake2b(digest_size=16)
+    try:
+        with open(path, "rb") as f:
+            h.update(f.read(sample))
         return h.hexdigest()
     except (OSError, PermissionError):
         return None
@@ -324,17 +334,40 @@ def find_duplicates(folder, progress_cb, done_cb):
                 pass
 
     candidates = [paths for paths in size_map.values() if len(paths) > 1]
-    total = sum(len(p) for p in candidates)
-    done_count = [0]
+    total_quick = sum(len(p) for p in candidates)
+
+    # Stage 1: quick hash (first 64KB) — eliminates most non-duplicates fast
+    quick_map = defaultdict(list)
+    done = 0
+    last_report = 0
+    for paths in candidates:
+        sz = os.path.getsize(paths[0]) if paths else 0
+        for fp in paths:
+            qh = file_quick_hash(fp)
+            if qh:
+                quick_map[(sz, qh)].append(fp)
+            done += 1
+            if done - last_report >= 25 or done == total_quick:
+                progress_cb(done, total_quick * 2, fp)
+                last_report = done
+
+    # Stage 2: full hash only on files that share size + quick hash
+    full_candidates = [paths for paths in quick_map.values() if len(paths) > 1]
+    total_full = sum(len(p) for p in full_candidates)
+    overall_total = total_quick + total_full
+    overall_done = total_quick
 
     hash_map = defaultdict(list)
-    for paths in candidates:
+    last_report = 0
+    for paths in full_candidates:
         for fp in paths:
             h = file_hash(fp)
             if h:
                 hash_map[h].append(fp)
-            done_count[0] += 1
-            progress_cb(done_count[0], total, fp)
+            overall_done += 1
+            if overall_done - last_report >= 25 or overall_done == overall_total:
+                progress_cb(overall_done, overall_total, fp)
+                last_report = overall_done
 
     dupes = {h: paths for h, paths in hash_map.items() if len(paths) > 1}
     done_cb(dupes, len(all_files))
@@ -345,7 +378,7 @@ def find_duplicates(folder, progress_cb, done_cb):
 class DuplicateFinderApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Duplicate Finder")
+        self.title("Duplicate Finder v4")
         self.geometry("1200x780")
         self.minsize(1000, 600)
         self.configure(bg=BG)
@@ -358,6 +391,7 @@ class DuplicateFinderApp(tk.Tk):
         self._selected_folder = tk.StringVar(value="")
         self._dupes = {}
         self._delete_iids = []
+        self._iid_path = {}
         self._pdf_var = tk.BooleanVar(value=True)
 
         self._build_ui()
@@ -542,6 +576,7 @@ class DuplicateFinderApp(tk.Tk):
 
         self._tree.delete(*self._tree.get_children())
         self._delete_iids = []
+        self._iid_path = {}
         self._clear_stats()
         self._progress["value"] = 0
         self._progress_label.config(text="Scanning...")
@@ -596,44 +631,54 @@ class DuplicateFinderApp(tk.Tk):
                                    Path(fp).name, self._fmt_size(sz), fp)))
 
         self._delete_iids = []
-        self._insert_rows_batch(rows, 0)
+        self._iid_path = {}
+        self._progress_label.config(text=f"Loading… 0 / {len(rows)}")
+        self.update_idletasks()
+        self.after(0, lambda: self._insert_rows_batch(rows, 0))
 
-    def _insert_rows_batch(self, rows, start, chunk=500):
+    def _insert_rows_batch(self, rows, start, chunk=100):
         end = min(start + chunk, len(rows))
         for tag, values in rows[start:end]:
             iid = self._tree.insert("", "end", values=values, tags=(tag,))
             if values[0] == "delete":
                 self._delete_iids.append(iid)
+                self._iid_path[iid] = values[3]
         if end < len(rows):
-            self._progress_label.config(text=f"Loading results… {end} / {len(rows)}")
-            self.after(5, lambda: self._insert_rows_batch(rows, end, chunk))
+            self._progress_label.config(text=f"Loading… {end} / {len(rows)}")
+            self.update_idletasks()
+            self.after(1, lambda: self._insert_rows_batch(rows, end, chunk))
         else:
             self._progress_label.config(text="")
 
     def _select_all_dupes(self):
         self._tree.selection_set([])
         targets = getattr(self, "_delete_iids", [])
-        if targets:
-            self._batch_select(targets, 0)
+        if not targets:
+            return
+        self._progress_label.config(text=f"Selecting… 0 / {len(targets)}")
+        self.update_idletasks()
+        self.after(1, lambda: self._batch_select(targets, 0))
 
-    def _batch_select(self, iids, start, chunk=500):
+    def _batch_select(self, iids, start, chunk=100):
         end = min(start + chunk, len(iids))
         self._tree.selection_add(*iids[start:end])
         if end < len(iids):
             self._progress_label.config(text=f"Selecting… {end} / {len(iids)}")
-            self.after(5, lambda: self._batch_select(iids, end, chunk))
+            self.update_idletasks()
+            self.after(1, lambda: self._batch_select(iids, end, chunk))
         else:
-            self._progress_label.config(text="")
+            self._progress_label.config(text=f"Selected {len(iids)} files.")
 
     def _deselect_all(self):
         self._tree.selection_set([])
 
     def _get_selected_paths(self):
-        return [
-            self._tree.item(iid, "values")[3]
-            for iid in self._tree.selection()
-            if self._tree.item(iid, "values") and self._tree.item(iid, "values")[3]
-        ]
+        paths = []
+        for iid in self._tree.selection():
+            p = self._iid_path.get(iid)
+            if p:
+                paths.append(p)
+        return paths
 
     def _reveal_selected(self):
         paths = self._get_selected_paths()
@@ -661,7 +706,7 @@ class DuplicateFinderApp(tk.Tk):
         # ── 1. Collect file info BEFORE deleting ──
         paths_set = set(paths)
         groups_info = []
-        for h, group_paths in self._dupes.items():
+        for group_paths in self._dupes.values():
             deleted_in_group = [p for p in group_paths if p in paths_set]
             if not deleted_in_group:
                 continue
@@ -694,45 +739,51 @@ class DuplicateFinderApp(tk.Tk):
                     "deleted": [{"path": p, "size": sz}],
                 })
 
-        # ── 2. Move to Trash ──
-        # Always use AppleScript Finder — it handles cross-device (external volumes)
-        # by moving to the volume's own .Trashes folder automatically.
-        errors = []
-        for p in paths:
-            try:
-                escaped = p.replace('"', '\\"')
-                script  = f'''tell application "Finder" to delete POSIX file "{escaped}"'''
-                result  = subprocess.run(["osascript", "-e", script],
-                                         capture_output=True, text=True, timeout=30)
-                if result.returncode != 0:
-                    # Fallback: detect the correct volume for this file
-                    # e.g. /Volumes/Maia/foo/bar.pdf → volume = /Volumes/Maia
-                    parts = Path(p).parts
-                    if len(parts) >= 3 and parts[1] == "Volumes":
-                        # External volume: /Volumes/VolumeName/...
-                        volume = os.path.join("/", parts[1], parts[2])
-                    else:
-                        # System volume — use user Trash
-                        volume = os.path.expanduser("~")
+        # ── 2. Move to Trash (background thread) ──
+        self._progress["value"] = 0
+        self._progress_label.config(text=f"Moving to Trash… 0 / {len(paths)}")
+        self.update_idletasks()
 
-                    uid       = os.getuid()
-                    vol_trash = os.path.join(volume, ".Trashes", str(uid))
-                    try:
-                        os.makedirs(vol_trash, exist_ok=True)
-                    except OSError:
-                        # Last resort: use home Trash with shutil (handles cross-device)
-                        vol_trash = os.path.expanduser("~/.Trash")
-                        os.makedirs(vol_trash, exist_ok=True)
+        def worker():
+            errors = []
+            total = len(paths)
+            for i, p in enumerate(paths, 1):
+                try:
+                    escaped = p.replace('"', '\\"')
+                    script  = f'''tell application "Finder" to delete POSIX file "{escaped}"'''
+                    result  = subprocess.run(["osascript", "-e", script],
+                                             capture_output=True, text=True, timeout=30)
+                    if result.returncode != 0:
+                        parts = Path(p).parts
+                        if len(parts) >= 3 and parts[1] == "Volumes":
+                            volume = os.path.join("/", parts[1], parts[2])
+                        else:
+                            volume = os.path.expanduser("~")
+                        uid       = os.getuid()
+                        vol_trash = os.path.join(volume, ".Trashes", str(uid))
+                        try:
+                            os.makedirs(vol_trash, exist_ok=True)
+                        except OSError:
+                            vol_trash = os.path.expanduser("~/.Trash")
+                            os.makedirs(vol_trash, exist_ok=True)
+                        dest = os.path.join(vol_trash, Path(p).name)
+                        if os.path.exists(dest):
+                            base, ext = os.path.splitext(Path(p).name)
+                            dest = os.path.join(vol_trash, f"{base}_{os.getpid()}{ext}")
+                        shutil.move(p, dest)
+                except Exception as e:
+                    errors.append(f"{Path(p).name}: {e}")
 
-                    dest = os.path.join(vol_trash, Path(p).name)
-                    if os.path.exists(dest):
-                        base, ext = os.path.splitext(Path(p).name)
-                        dest = os.path.join(vol_trash, f"{base}_{os.getpid()}{ext}")
-                    shutil.move(p, dest)
-            except Exception as e:
-                errors.append(f"{Path(p).name}: {e}")
+                if i % 10 == 0 or i == total:
+                    self.after(0, lambda done=i, t=total:
+                        (self._progress.configure(value=(done/t)*100),
+                         self._progress_label.config(text=f"Moving to Trash… {done} / {t}")))
 
-        # ── 3. Generate PDF ──
+            self.after(0, lambda: self._after_delete(paths, errors, groups_info))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _after_delete(self, paths, errors, groups_info):
         pdf_path = None
         if self._pdf_var.get() and groups_info:
             try:
@@ -747,7 +798,9 @@ class DuplicateFinderApp(tk.Tk):
                 messagebox.showwarning("PDF error", str(e))
                 pdf_path = None
 
-        # ── 4. Show result ──
+        self._progress["value"] = 100
+        self._progress_label.config(text="")
+
         if errors:
             messagebox.showerror("Some errors", "\n".join(errors[:5]))
         else:
@@ -756,14 +809,20 @@ class DuplicateFinderApp(tk.Tk):
                 result_msg += f"\n\nPDF report saved to:\n{pdf_path}"
             messagebox.showinfo("Done", result_msg)
 
-        # ── 5. Open PDF then rescan ──
         if pdf_path and os.path.exists(pdf_path):
             subprocess.run(["open", pdf_path])
 
-        # Clear tree immediately so it feels responsive
-        self._tree.delete(*self._tree.get_children())
-        self._dupes = {}
-        self._start_scan()
+        # Remove deleted rows from the tree (no rescan)
+        deleted = set(paths)
+        for iid, p in list(self._iid_path.items()):
+            if p in deleted:
+                try:
+                    self._tree.delete(iid)
+                except Exception:
+                    pass
+                self._iid_path.pop(iid, None)
+                if iid in self._delete_iids:
+                    self._delete_iids.remove(iid)
 
 if __name__ == "__main__":
     app = DuplicateFinderApp()
