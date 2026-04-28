@@ -52,18 +52,14 @@ def generate_pdf_report(copied_files, folder_a, folder_b, output_path):
                                          Table, TableStyle, HRFlowable)
         from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib.enums import TA_LEFT
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        import reportlab as _rl, os as _os
-        _fonts = _os.path.join(_os.path.dirname(_rl.__file__), "fonts")
-        pdfmetrics.registerFont(TTFont("Vera",   _os.path.join(_fonts, "Vera.ttf")))
-        pdfmetrics.registerFont(TTFont("VeraBd", _os.path.join(_fonts, "VeraBd.ttf")))
-        pdfmetrics.registerFont(TTFont("VeraIt", _os.path.join(_fonts, "VeraIt.ttf")))
-        FNORM = "Vera"
-        FBOLD = "VeraBd"
-        FMONO = "Vera"
+        # Base-14 PDF fonts cover Latin-1 (French accents) reliably.
+        FNORM = "Helvetica"
+        FBOLD = "Helvetica-Bold"
+        FMONO = "Courier"
     except ImportError:
         return False, "reportlab not installed.\nRun: pip3 install reportlab"
+
+    from xml.sax.saxutils import escape as _xml_escape
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -86,9 +82,11 @@ def generate_pdf_report(copied_files, folder_a, folder_b, output_path):
     )
 
     title_s = ParagraphStyle("T", fontName=FBOLD, fontSize=22,
-                              textColor=C_TITLE, spaceAfter=3, alignment=TA_LEFT)
+                              leading=26, textColor=C_TITLE,
+                              spaceAfter=10, alignment=TA_LEFT)
     sub_s   = ParagraphStyle("S", fontName=FNORM, fontSize=10,
-                              textColor=C_HDR, spaceAfter=2, alignment=TA_LEFT)
+                              leading=12, textColor=C_HDR,
+                              spaceBefore=2, spaceAfter=2, alignment=TA_LEFT)
     sec_s   = ParagraphStyle("Sec", fontName=FBOLD, fontSize=12,
                               textColor=C_HDR, spaceBefore=12, spaceAfter=5)
     note_s  = ParagraphStyle("N", fontName=FNORM, fontSize=8,
@@ -112,14 +110,14 @@ def generate_pdf_report(copied_files, folder_a, folder_b, output_path):
     ]
     sum_tbl = Table(summary_data, colWidths=[3.5*cm, 23*cm])
     sum_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0,0),(0,-1), colors.HexColor("#1a1a00")),
-        ("BACKGROUND",    (1,0),(1,-1), colors.HexColor("#1e1e1e")),
-        ("TEXTCOLOR",     (0,0),(0,-1), C_ACCENT),
+        ("BACKGROUND",    (0,0),(0,-1), colors.HexColor("#fff8e1")),
+        ("BACKGROUND",    (1,0),(1,-1), colors.white),
+        ("TEXTCOLOR",     (0,0),(0,-1), colors.HexColor("#b45309")),
         ("TEXTCOLOR",     (1,0),(1,-1), C_BODY),
         ("FONTNAME",      (0,0),(0,-1), FBOLD),
         ("FONTNAME",      (1,0),(1,-1), FNORM),
         ("FONTSIZE",      (0,0),(-1,-1), 9),
-        ("GRID",          (0,0),(-1,-1), 0.5, colors.HexColor("#333300")),
+        ("GRID",          (0,0),(-1,-1), 0.5, colors.HexColor("#e5d3a3")),
         ("VALIGN",        (0,0),(-1,-1), "MIDDLE"),
         ("TOPPADDING",    (0,0),(-1,-1), 5),
         ("BOTTOMPADDING", (0,0),(-1,-1), 5),
@@ -143,23 +141,25 @@ def generate_pdf_report(copied_files, folder_a, folder_b, output_path):
     for i, f in enumerate(copied_files, 1):
         direction = "→ to Folder 1" if f["direction"] == "to_a" else "← to Folder 2"
         dir_color = C_ONLY_B if f["direction"] == "to_a" else C_ONLY_A
-        fname = Path(f["src"]).name
+        fname = _xml_escape(Path(f["src"]).name)
+        src_p = _xml_escape(f["src"])
+        dst_p = _xml_escape(f["dst"])
         cell = Paragraph(
-            f'{fname}<br/><font name="{FMONO}" size="8" color="#444746">{f["src"]}</font>',
+            f'{fname}<br/><font name="{FMONO}" size="8" color="#444746">{src_p}</font>',
             fname_s
         )
-        dest_cell = Paragraph(f["dst"], path_s)
+        dest_cell = Paragraph(dst_p, path_s)
         dir_cell  = Paragraph(direction,
                                ParagraphStyle("d", fontName=FBOLD, fontSize=9,
                                               textColor=dir_color))
         table_data.append([str(i), dir_cell, cell, dest_cell])
 
-    bg_a = colors.HexColor("#1a1a1a")
+    bg_a = colors.HexColor("#f5f5f5")
     bg_b = colors.white
     file_tbl = Table(table_data, colWidths=COL_W, repeatRows=1)
     style_cmds = [
         ("BACKGROUND",    (0,0),(-1,0),  C_HDR),
-        ("GRID",          (0,0),(-1,-1), 0.3, colors.HexColor("#2c2c2c")),
+        ("GRID",          (0,0),(-1,-1), 0.3, colors.HexColor("#cccccc")),
         ("VALIGN",        (0,0),(-1,-1), "TOP"),
         ("TOPPADDING",    (0,0),(-1,-1), 5),
         ("BOTTOMPADDING", (0,0),(-1,-1), 5),
@@ -218,7 +218,7 @@ def file_quick_hash(path, sample=65536):
     except (OSError, PermissionError):
         return None
 
-def compare_folders(folder_a, folder_b, progress_cb, done_cb):
+def compare_folders(folder_a, folder_b, progress_cb, done_cb, quick=False):
     """
     Walk both folders and return:
       only_a  : files only in A  (rel_path → abs_path_a)
@@ -228,6 +228,11 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb):
     """
     def collect(folder):
         result = {}
+        if os.path.isfile(folder):
+            name = os.path.basename(folder)
+            if not _is_temp_file(name):
+                result[name] = folder
+            return result
         for root, dirs, files in os.walk(folder):
             dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
             for name in files:
@@ -237,6 +242,62 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb):
                 rel   = os.path.relpath(abs_p, folder)
                 result[rel] = abs_p
         return result
+
+    # Single-file mode: search folder_b recursively
+    if os.path.isfile(folder_a):
+        src_name = os.path.basename(folder_a)
+
+        if quick:
+            # Filename-only match
+            matches = []
+            for root, dirs, files in os.walk(folder_b):
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                for name in files:
+                    if name == src_name:
+                        matches.append(os.path.join(root, name))
+            progress_cb(1, 1, src_name)
+            if matches:
+                done_cb({}, {}, {}, {src_name: matches})
+            else:
+                done_cb({src_name: folder_a}, {}, {}, {})
+            return
+
+        try:
+            src_size  = os.path.getsize(folder_a)
+            src_quick = file_quick_hash(folder_a)
+            src_full  = file_hash(folder_a)
+        except OSError:
+            done_cb({src_name: folder_a}, {}, {}, {})
+            return
+
+        candidates = []
+        for root, dirs, files in os.walk(folder_b):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            for name in files:
+                if _is_temp_file(name):
+                    continue
+                fp = os.path.join(root, name)
+                try:
+                    if os.path.getsize(fp) == src_size:
+                        candidates.append(fp)
+                except OSError:
+                    pass
+
+        matches = []
+        total = max(len(candidates), 1)
+        last = 0
+        for i, fp in enumerate(candidates, 1):
+            if file_quick_hash(fp) == src_quick and file_hash(fp) == src_full:
+                matches.append(fp)
+            if i - last >= 25 or i == len(candidates):
+                progress_cb(i, total, fp)
+                last = i
+
+        if matches:
+            done_cb({}, {}, {}, {src_name: matches})
+        else:
+            done_cb({src_name: folder_a}, {}, {}, {})
+        return
 
     files_a = collect(folder_a)
     files_b = collect(folder_b)
@@ -250,8 +311,15 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb):
 
     different = {}
     total = len(common)
+
+    # Quick mode: filename-only — common files are assumed identical
+    if quick:
+        progress_cb(total, max(total, 1), "")
+        done_cb(only_a, only_b, different, {})
+        return
+
     if total == 0:
-        done_cb(only_a, only_b, different)
+        done_cb(only_a, only_b, different, {})
         return
 
     # Stage 0: skip files whose sizes differ (cheap, no read)
@@ -299,7 +367,7 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb):
             progress_cb(n_quick + full_done, overall_total, rel)
             last = full_done
 
-    done_cb(only_a, only_b, different)
+    done_cb(only_a, only_b, different, {})
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -307,9 +375,9 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb):
 class FolderDiffApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Folder Differences v2")
-        self.geometry("1300x800")
-        self.minsize(1000, 600)
+        self.title("Folder Differences v11")
+        self.geometry("1300x860")
+        self.minsize(1000, 680)
         self.configure(bg=BG)
 
         try:
@@ -331,6 +399,8 @@ class FolderDiffApp(tk.Tk):
         self._size_b     = tk.StringVar(value="")
         self._iid_data   = {}   # iid -> dict (status, name, rel, data, tags)
         self._selectable_iids = []
+        self._matched_source = None  # set when a single-file match is found
+        self._quick_check    = tk.BooleanVar(value=False)  # filenames-only mode
 
         self._build_ui()
 
@@ -360,7 +430,8 @@ class FolderDiffApp(tk.Tk):
         pickers = tk.Frame(self, bg=BG)
         pickers.pack(fill="x", padx=28, pady=(16, 0))
 
-        self._build_folder_row(pickers, "Folder 1", self._folder_a, self._browse_a, ONLY_A, self._size_a)
+        self._build_folder_row(pickers, "Folder 1", self._folder_a, self._browse_a, ONLY_A, self._size_a,
+                                browse_folder_cmd=self._browse_a_folder)
         self._build_folder_row(pickers, "Folder 2", self._folder_b, self._browse_b, ONLY_B, self._size_b)
 
         # ── Compare button ──
@@ -370,6 +441,15 @@ class FolderDiffApp(tk.Tk):
                                             self._start_compare,
                                             bg=ACCENT, fg="#ffffff", pad=(20, 0))
         self._compare_btn.pack(side="left")
+
+        tk.Checkbutton(
+            btn_row,
+            text="  Quick check (filenames only — skip content hashing)",
+            variable=self._quick_check,
+            font=FONT_SMALL, bg=BG, fg=FG_DIM,
+            selectcolor=CARD, activebackground=BG, activeforeground=FG,
+            relief="flat", bd=0, cursor="hand2"
+        ).pack(side="left", padx=(20, 0))
 
         # ── Progress ──
         prog_frame = tk.Frame(self, bg=BG)
@@ -400,6 +480,9 @@ class FolderDiffApp(tk.Tk):
             dot.pack(side="left", padx=(0, 5))
             dot.pack_propagate(False)
             tk.Label(f, text=label, font=FONT_SMALL, bg=BG, fg=FG_DIM).pack(side="left")
+
+        # ── Match action (single-file match) — packed only when populated
+        self._match_actions = tk.Frame(self, bg=BG)
 
         # ── Results tree ──
         results_frame = tk.Frame(self, bg=SURFACE,
@@ -471,6 +554,10 @@ class FolderDiffApp(tk.Tk):
                        lambda: self._copy_selected("to_b"),
                        bg=ONLY_B, fg="#ffffff", pad=(16, 0)).pack(side="left", padx=(0, 8))
 
+        self._make_btn(copy_bar, "⇒  Move selected to Folder 2",
+                       lambda: self._copy_selected("to_b", move=True),
+                       bg=ACCENT, fg="#ffffff", pad=(16, 0)).pack(side="left", padx=(0, 8))
+
         tk.Frame(copy_bar, bg=BG).pack(side="left", expand=True)
 
         self._make_btn(copy_bar, "Reveal in Finder",
@@ -500,7 +587,8 @@ class FolderDiffApp(tk.Tk):
         self._make_btn(bottom, "✕  Quit", self.destroy,
                        bg=CARD, fg=FG_DIM, pad=(14, 0)).pack(side="right")
 
-    def _build_folder_row(self, parent, label, var, browse_cmd, color, size_var):
+    def _build_folder_row(self, parent, label, var, browse_cmd, color, size_var,
+                          browse_folder_cmd=None):
         row = tk.Frame(parent, bg=BG)
         row.pack(fill="x", pady=(0, 8))
 
@@ -520,8 +608,12 @@ class FolderDiffApp(tk.Tk):
         tk.Label(row, textvariable=size_var, font=FONT_SMALL,
                  bg=BG, fg=color, width=10, anchor="e").pack(side="left", padx=(0, 8))
 
-        self._make_btn(row, "Browse…", browse_cmd,
+        file_label = "File…" if browse_folder_cmd else "Browse…"
+        self._make_btn(row, file_label, browse_cmd,
                        bg=CARD, fg=FG, pad=(14, 0)).pack(side="left")
+        if browse_folder_cmd:
+            self._make_btn(row, "Folder…", browse_folder_cmd,
+                           bg=CARD, fg=FG, pad=(14, 0)).pack(side="left", padx=(6, 0))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -556,18 +648,24 @@ class FolderDiffApp(tk.Tk):
 
     @staticmethod
     def _folder_size(folder):
-        """Return human-readable total size of a folder."""
+        """Return human-readable total size of a folder or single file."""
         total = 0
-        try:
-            for root, dirs, files in os.walk(folder):
-                dirs[:] = [d for d in dirs if not d.startswith('.')]
-                for f in files:
-                    try:
-                        total += os.path.getsize(os.path.join(root, f))
-                    except OSError:
-                        pass
-        except OSError:
-            pass
+        if os.path.isfile(folder):
+            try:
+                total = os.path.getsize(folder)
+            except OSError:
+                pass
+        else:
+            try:
+                for root, dirs, files in os.walk(folder):
+                    dirs[:] = [d for d in dirs if not d.startswith('.')]
+                    for f in files:
+                        try:
+                            total += os.path.getsize(os.path.join(root, f))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
         for unit in ("B", "KB", "MB", "GB", "TB"):
             if total < 1024:
                 return f"{total:.1f} {unit}"
@@ -575,7 +673,19 @@ class FolderDiffApp(tk.Tk):
         return f"{total:.1f} TB"
 
     def _browse_a(self):
-        folder = filedialog.askdirectory(title="Choose Folder 1")
+        path = filedialog.askopenfilename(title="Choose a file (Folder 1)")
+        if path:
+            self._real_a = path
+            self._folder_a.set(path)
+            self._size_a.set("calculating…")
+            threading.Thread(
+                target=lambda: self.after(0, lambda:
+                    self._size_a.set(self._folder_size(path))),
+                daemon=True
+            ).start()
+
+    def _browse_a_folder(self):
+        folder = filedialog.askdirectory(title="Choose a folder (Folder 1)")
         if folder:
             self._real_a = folder
             self._folder_a.set(folder)
@@ -604,7 +714,7 @@ class FolderDiffApp(tk.Tk):
         a = self._real_a or self._folder_a.get().strip()
         b = self._real_b or self._folder_b.get().strip()
 
-        if not a or not os.path.isdir(a):
+        if not a or not (os.path.isfile(a) or os.path.isdir(a)):
             messagebox.showwarning("Missing folder", "Please choose Folder 1 first.")
             return
         if not b or not os.path.isdir(b):
@@ -612,10 +722,17 @@ class FolderDiffApp(tk.Tk):
             return
 
         self._tree.delete(*self._tree.get_children())
+        self._iid_data = {}
+        self._selectable_iids = []
+        for w in self._match_actions.winfo_children():
+            w.destroy()
+        self._match_actions.pack_forget()
+        self._matched_source = None
         self._clear_stats()
         self._progress["value"] = 0
         self._progress_label.config(text="Comparing…")
         self._compare_btn.config(text="Comparing…")
+        self.update_idletasks()
 
         def on_progress(done, total, name):
             if total:
@@ -624,33 +741,57 @@ class FolderDiffApp(tk.Tk):
             self.after(0, lambda n=Path(name).name:
                 self._progress_label.config(text=f"Checking: {n}"))
 
-        def on_done(only_a, only_b, different):
-            self.after(0, lambda: self._render(only_a, only_b, different))
+        def on_done(only_a, only_b, different, matched):
+            self.after(0, lambda: self._render(only_a, only_b, different, matched))
 
+        quick = bool(self._quick_check.get())
         threading.Thread(target=compare_folders,
                          args=(a, b, on_progress, on_done),
+                         kwargs={"quick": quick},
                          daemon=True).start()
 
-    def _render(self, only_a, only_b, different):
+    def _render(self, only_a, only_b, different, matched=None):
         self._only_a    = only_a
         self._only_b    = only_b
         self._different = different
+        matched = matched or {}
 
         self._tree.delete(*self._tree.get_children())
         self._iid_data = {}
         self._selectable_iids = []
-        self._progress["value"] = 100
+        self._progress["value"] = 0
         self._progress_label.config(text="")
         self._compare_btn.config(text="  Compare Folders  ")
 
+        # Reset match-action bar
+        for w in self._match_actions.winfo_children():
+            w.destroy()
+        self._match_actions.pack_forget()
+        self._matched_source = None
+        if matched and len(matched) == 1:
+            src_path = self._real_a or self._folder_a.get().strip()
+            if src_path and os.path.isfile(src_path):
+                self._matched_source = src_path
+                self._make_btn(
+                    self._match_actions,
+                    f"🗑  Delete “{Path(src_path).name}” from Folder 1 (it exists in Folder 2)",
+                    self._delete_matched_source,
+                    bg=DANGER, fg="#ffffff", pad=(16, 0),
+                ).pack(side="left")
+                self._match_actions.pack(fill="x", padx=28, pady=(6, 0),
+                                          before=self._tree.master)
+
         self._clear_stats()
         total = len(only_a) + len(only_b) + len(different)
+        match_count = sum(len(v) for v in matched.values())
         self._add_stat("Only in Folder 1", str(len(only_a)),    ONLY_A)
         self._add_stat("Only in Folder 2", str(len(only_b)),    ONLY_B)
         self._add_stat("Differences", str(len(different)), DIFF)
         self._add_stat("Total differences", str(total),          ACCENT)
+        if matched:
+            self._add_stat("Matches in Folder 2", str(match_count), ONLY_B)
 
-        if total == 0:
+        if total == 0 and not matched:
             self._tree.insert("", "end",
                                values=("✅  Folders are identical", "", "", ""),
                                tags=("section",))
@@ -658,6 +799,13 @@ class FolderDiffApp(tk.Tk):
 
         # Build all rows up front, insert in batches
         rows = []
+        if matched:
+            for src_name, paths in matched.items():
+                rows.append(("section_b",
+                             (f"── Match found in Folder 2 for “{src_name}”  ({len(paths)} file(s))", "", "", "")))
+                for p in paths:
+                    rows.append(("only_b",
+                                 ("Match in Folder 2", Path(p).name, p, p)))
         if only_a:
             rows.append(("section_a",
                          (f"── Only in Folder 1  ({len(only_a)} files)", "", "", "")))
@@ -697,6 +845,8 @@ class FolderDiffApp(tk.Tk):
             self.after(1, lambda: self._insert_rows_batch(rows, end, chunk))
         else:
             self._progress_label.config(text="")
+            self._progress["value"] = 0
+            self.update_idletasks()
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
@@ -735,6 +885,45 @@ class FolderDiffApp(tk.Tk):
             })
         return result
 
+    # ── Delete matched single source ──────────────────────────────────────────
+
+    def _delete_matched_source(self):
+        src = self._matched_source
+        if not src or not os.path.isfile(src):
+            messagebox.showwarning("No file", "No matched source file to delete.")
+            return
+        if not messagebox.askyesno(
+            "Move to Trash",
+            f"Move “{Path(src).name}” to the Trash?\n\n"
+            f"The matching file in Folder 2 will be kept.\n"
+            f"This can be undone from the Trash.",
+            icon="warning",
+        ):
+            return
+        try:
+            escaped = src.replace('"', '\\"')
+            script  = f'tell application "Finder" to delete POSIX file "{escaped}"'
+            result  = subprocess.run(["osascript", "-e", script],
+                                     capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "Finder refused the delete")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+            return
+
+        messagebox.showinfo("Deleted", f"Moved to Trash: {Path(src).name}")
+        self._real_a = ""
+        self._folder_a.set("")
+        self._size_a.set("")
+        self._tree.delete(*self._tree.get_children())
+        self._iid_data = {}
+        self._selectable_iids = []
+        for w in self._match_actions.winfo_children():
+            w.destroy()
+        self._match_actions.pack_forget()
+        self._matched_source = None
+        self._clear_stats()
+
     # ── Reveal ────────────────────────────────────────────────────────────────
 
     def _reveal_selected(self):
@@ -765,8 +954,8 @@ class FolderDiffApp(tk.Tk):
 
     # ── Copy ──────────────────────────────────────────────────────────────────
 
-    def _copy_selected(self, direction):
-        """direction: 'to_a' (copy to folder 1) or 'to_b' (copy to folder 2)"""
+    def _copy_selected(self, direction, move=False):
+        """direction: 'to_a' or 'to_b'.  If move=True, source files are deleted after copy."""
         items = self._get_selected_items()
         if not items:
             messagebox.showinfo("Nothing selected", "Select one or more files first.")
@@ -774,6 +963,7 @@ class FolderDiffApp(tk.Tk):
 
         dest_folder = self._real_a if direction == "to_a" else self._real_b
         dest_label  = "Folder 1" if direction == "to_a" else "Folder 2"
+        verb        = "Move" if move else "Copy"
 
         # Validate copyable items
         copyable = []
@@ -790,21 +980,22 @@ class FolderDiffApp(tk.Tk):
 
         if not copyable:
             messagebox.showinfo(
-                "Nothing to copy",
+                f"Nothing to {verb.lower()}",
                 f"Selected files already exist in {dest_label} with identical content."
             )
             return
 
+        confirm_extra = ("Source files will be removed."
+                         if move else "Existing files will be overwritten.")
         if not messagebox.askyesno(
-            "Copy files",
-            f"Copy {len(copyable)} file(s) to {dest_label}?\n\n"
-            f"Existing files will be overwritten.",
-            icon="question"
+            f"{verb} files",
+            f"{verb} {len(copyable)} file(s) to {dest_label}?\n\n{confirm_extra}",
+            icon="warning" if move else "question",
         ):
             return
 
         self._progress["value"] = 0
-        self._progress_label.config(text=f"Copying… 0 / {len(copyable)}")
+        self._progress_label.config(text=f"{verb}ing… 0 / {len(copyable)}")
         self.update_idletasks()
 
         def worker():
@@ -815,27 +1006,31 @@ class FolderDiffApp(tk.Tk):
                 dst = os.path.join(dest_folder, rel)
                 try:
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.copy2(src, dst)
+                    if move:
+                        shutil.move(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
                     copied.append({"src": src, "dst": dst, "direction": direction})
                 except Exception as e:
                     errors.append(f"{Path(src).name}: {e}")
                 if i % 5 == 0 or i == total:
                     self.after(0, lambda done=i, t=total:
                         (self._progress.configure(value=(done/t)*100),
-                         self._progress_label.config(text=f"Copying… {done} / {t}")))
+                         self._progress_label.config(text=f"{verb}ing… {done} / {t}")))
 
-            self.after(0, lambda: self._after_copy(copied, errors, dest_label))
+            self.after(0, lambda: self._after_copy(copied, errors, dest_label, move))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _after_copy(self, copied, errors, dest_label):
-        self._progress["value"] = 100
+    def _after_copy(self, copied, errors, dest_label, move=False):
+        self._progress["value"] = 0
         self._progress_label.config(text="")
 
+        verb_past = "moved" if move else "copied"
         if errors:
             messagebox.showerror("Some errors", "\n".join(errors[:5]))
         else:
-            messagebox.showinfo("Done", f"{len(copied)} file(s) copied to {dest_label}.")
+            messagebox.showinfo("Done", f"{len(copied)} file(s) {verb_past} to {dest_label}.")
 
         if self._pdf_var.get() and copied:
             def make_pdf():

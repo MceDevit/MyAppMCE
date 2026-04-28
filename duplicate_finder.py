@@ -57,21 +57,15 @@ def generate_pdf_report(groups, folder, output_path):
                                          Table, TableStyle, HRFlowable)
         from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib.enums import TA_LEFT
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        import reportlab, os as _os
-        _fonts = _os.path.join(_os.path.dirname(reportlab.__file__), "fonts")
-        pdfmetrics.registerFont(TTFont("Vera",   _os.path.join(_fonts, "Vera.ttf")))
-        pdfmetrics.registerFont(TTFont("VeraBd", _os.path.join(_fonts, "VeraBd.ttf")))
-        pdfmetrics.registerFont(TTFont("VeraIt", _os.path.join(_fonts, "VeraIt.ttf")))
-        pdfmetrics.registerFont(TTFont("VeraBI", _os.path.join(_fonts, "VeraBI.ttf")))
-        pdfmetrics.registerFont(TTFont("VeraMono", _os.path.join(_fonts, "VeraBd.ttf")))
-        FONT_NORMAL = "Vera"
-        FONT_BOLD   = "VeraBd"
-        FONT_ITALIC = "VeraIt"
-        FONT_MONO   = "VeraMono"
+        # Base-14 PDF fonts cover Latin-1 (French accents) reliably.
+        FONT_NORMAL = "Helvetica"
+        FONT_BOLD   = "Helvetica-Bold"
+        FONT_ITALIC = "Helvetica-Oblique"
+        FONT_MONO   = "Courier"
     except ImportError:
         return False, "reportlab not installed.\nRun: pip3 install reportlab"
+
+    from xml.sax.saxutils import escape as _xml_escape
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -205,10 +199,11 @@ def generate_pdf_report(groups, folder, output_path):
 
         # source row — file name + path on second line
         src = group["source"]
-        src_name = Path(src["path"]).name
+        src_name = _xml_escape(Path(src["path"]).name)
+        src_path = _xml_escape(src["path"])
         src_cell = Paragraph(
             f'{src_name}<br/>'
-            f'<font name="{FONT_MONO}" size="8" color="#78350f">{src["path"]}</font>',
+            f'<font name="{FONT_MONO}" size="8" color="#78350f">{src_path}</font>',
             fname_style
         )
         table_data.append([
@@ -223,10 +218,11 @@ def generate_pdf_report(groups, folder, output_path):
 
         # deleted rows
         for f in group["deleted"]:
-            fname = Path(f["path"]).name
+            fname = _xml_escape(Path(f["path"]).name)
+            fpath = _xml_escape(f["path"])
             del_cell = Paragraph(
                 f'{fname}<br/>'
-                f'<font name="{FONT_MONO}" size="8" color="#78350f">{f["path"]}</font>',
+                f'<font name="{FONT_MONO}" size="8" color="#78350f">{fpath}</font>',
                 fname_style
             )
             table_data.append([
@@ -377,12 +373,37 @@ def find_duplicates(folder, progress_cb, done_cb):
     done_cb(dupes, len(all_files))
 
 
+def find_duplicates_by_name(folder, progress_cb, done_cb):
+    name_map = defaultdict(list)
+    all_files = []
+
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for name in files:
+            if _is_temp_file(name):
+                continue
+            fp = os.path.join(root, name)
+            try:
+                sz = os.path.getsize(fp)
+                if sz > 0:
+                    name_map[name].append(fp)
+                    all_files.append(fp)
+            except OSError:
+                pass
+
+    total = len(all_files)
+    if total:
+        progress_cb(total, total, all_files[-1])
+    dupes = {name: paths for name, paths in name_map.items() if len(paths) > 1}
+    done_cb(dupes, len(all_files))
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 class DuplicateFinderApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Duplicate Finder v5")
+        self.title("Duplicate Finder v6")
         self.geometry("1200x780")
         self.minsize(1000, 600)
         self.configure(bg=BG)
@@ -397,6 +418,10 @@ class DuplicateFinderApp(tk.Tk):
         self._delete_iids = []
         self._iid_path = {}
         self._pdf_var = tk.BooleanVar(value=True)
+        self._search_mode = tk.StringVar(value="content")
+        self._iid_group = {}
+        self._group_keep_iid = {}
+        self._group_all_iids = {}
 
         self._build_ui()
 
@@ -439,6 +464,19 @@ class DuplicateFinderApp(tk.Tk):
                                         bg=ACCENT, fg="#ffffff", pad=(18, 0))
         self._scan_btn.pack(side="left")
 
+        # Search mode
+        mode_frame = tk.Frame(self, bg=BG)
+        mode_frame.pack(fill="x", padx=28, pady=(8, 0))
+        tk.Label(mode_frame, text="Find by:", font=FONT_SMALL,
+                 bg=BG, fg=FG_DIM).pack(side="left")
+        for val, label in (("content", "File content  (hash)"), ("name", "File name")):
+            tk.Radiobutton(
+                mode_frame, text=label, variable=self._search_mode, value=val,
+                font=FONT_SMALL, bg=BG, fg=FG, selectcolor=CARD,
+                activebackground=BG, activeforeground=FG,
+                relief="flat", bd=0, cursor="hand2"
+            ).pack(side="left", padx=(12, 0))
+
         # Progress
         prog_frame = tk.Frame(self, bg=BG)
         prog_frame.pack(fill="x", padx=28, pady=(14, 0))
@@ -470,7 +508,7 @@ class DuplicateFinderApp(tk.Tk):
                          relief="flat", font=FONT_SMALL)
         style.map("Treeview", background=[("selected", ACCENT)])
 
-        self._tree.heading("keep", text="")
+        self._tree.heading("keep", text="Role  ↕ click")
         self._tree.heading("file", text="File name")
         self._tree.heading("size", text="Size")
         self._tree.heading("path", text="Full path")
@@ -485,6 +523,7 @@ class DuplicateFinderApp(tk.Tk):
         vsb.pack(side="right", fill="y")
         hsb.pack(side="bottom", fill="x")
         self._tree.pack(side="left", fill="both", expand=True)
+        self._tree.bind("<Button-1>", self._on_role_click)
 
         self._tree.tag_configure("keep_a",   background=SURFACE, foreground=KEEP)
         self._tree.tag_configure("keep_b",   background=CARD,    foreground=KEEP)
@@ -584,23 +623,30 @@ class DuplicateFinderApp(tk.Tk):
         self._tree.delete(*self._tree.get_children())
         self._delete_iids = []
         self._iid_path = {}
+        self._iid_group = {}
+        self._group_keep_iid = {}
+        self._group_all_iids = {}
         self._clear_stats()
         self._progress["value"] = 0
         self._progress_label.config(text="Scanning...")
         self._scan_btn.config(text="Scanning...", cursor="arrow")
         self._scan_btn.unbind("<Button-1>")
 
+        by_name = self._search_mode.get() == "name"
+
         def on_progress(done, total, fp):
             if total:
                 self.after(0, lambda: self._progress.configure(value=(done/total)*100))
-            self.after(0, lambda n=Path(fp).name:
-                       self._progress_label.config(text=f"Hashing: {n}"))
+            label = Path(fp).name if fp else ""
+            self.after(0, lambda n=label:
+                       self._progress_label.config(text=f"{'Scanning' if by_name else 'Hashing'}: {n}"))
 
         def on_done(dupes, total_files):
             self.after(0, lambda: self._render_results(dupes, total_files))
             self.after(0, self._enable_scan_btn)
 
-        threading.Thread(target=find_duplicates,
+        fn = find_duplicates_by_name if by_name else find_duplicates
+        threading.Thread(target=fn,
                          args=(folder, on_progress, on_done), daemon=True).start()
 
     def _enable_scan_btn(self):
@@ -628,35 +674,81 @@ class DuplicateFinderApp(tk.Tk):
                                tags=("header",))
             return
 
+        is_name_mode = self._search_mode.get() == "name"
         rows = []
-        for idx, (h, paths) in enumerate(dupes.items()):
+        for idx, (key, paths) in enumerate(dupes.items()):
             suffix = "_a" if idx % 2 == 0 else "_b"
-            sz = os.path.getsize(paths[0])
-            rows.append(("header", ("", f"-- Group {idx+1}  ({len(paths)} files, {self._fmt_size(sz)} each)", "", "")))
+            if is_name_mode:
+                rows.append(("header", ("", f"── Group {idx+1}  ({len(paths)} files)", "", f"same name:  {key}"), None))
+            else:
+                sz = os.path.getsize(paths[0])
+                rows.append(("header", ("", f"── Group {idx+1}  ({len(paths)} files, {self._fmt_size(sz)} each)", "", ""), None))
             for i, fp in enumerate(paths):
                 role = "keep" if i == 0 else "delete"
-                rows.append((role + suffix,
-                             (role, Path(fp).name, self._fmt_size(sz), fp)))
+                try:
+                    fsz = os.path.getsize(fp)
+                except OSError:
+                    fsz = 0
+                rows.append((role + suffix, (role, Path(fp).name, self._fmt_size(fsz), fp), idx))
 
         self._delete_iids = []
         self._iid_path = {}
+        self._iid_group = {}
+        self._group_keep_iid = {}
+        self._group_all_iids = {}
         self._progress_label.config(text=f"Loading… 0 / {len(rows)}")
         self.update_idletasks()
         self.after(0, lambda: self._insert_rows_batch(rows, 0))
 
     def _insert_rows_batch(self, rows, start, chunk=100):
         end = min(start + chunk, len(rows))
-        for tag, values in rows[start:end]:
+        for tag, values, group_idx in rows[start:end]:
             iid = self._tree.insert("", "end", values=values, tags=(tag,))
-            if values[0] == "delete":
-                self._delete_iids.append(iid)
+            if group_idx is not None:
+                self._iid_group[iid] = group_idx
                 self._iid_path[iid] = values[3]
+                self._group_all_iids.setdefault(group_idx, []).append(iid)
+                if values[0] == "keep":
+                    self._group_keep_iid[group_idx] = iid
+                elif values[0] == "delete":
+                    self._delete_iids.append(iid)
         if end < len(rows):
             self._progress_label.config(text=f"Loading… {end} / {len(rows)}")
             self.update_idletasks()
             self.after(1, lambda: self._insert_rows_batch(rows, end, chunk))
         else:
             self._progress_label.config(text="")
+
+    def _on_role_click(self, event):
+        if self._tree.identify_column(event.x) != "#1":
+            return
+        iid = self._tree.identify_row(event.y)
+        if not iid or iid not in self._iid_group:
+            return
+        self._set_as_keep(iid)
+        return "break"
+
+    def _set_as_keep(self, iid):
+        group_idx = self._iid_group[iid]
+        old_keep = self._group_keep_iid.get(group_idx)
+        if old_keep == iid:
+            return
+        # flip old keep → delete
+        if old_keep:
+            old_vals = list(self._tree.item(old_keep, "values"))
+            suffix = self._tree.item(old_keep, "tags")[0][-2:]
+            old_vals[0] = "delete"
+            self._tree.item(old_keep, values=old_vals, tags=("delete" + suffix,))
+            if old_keep not in self._delete_iids:
+                self._delete_iids.append(old_keep)
+        # flip clicked → keep
+        new_vals = list(self._tree.item(iid, "values"))
+        suffix = self._tree.item(iid, "tags")[0][-2:]
+        new_vals[0] = "keep"
+        self._tree.item(iid, values=new_vals, tags=("keep" + suffix,))
+        if iid in self._delete_iids:
+            self._delete_iids.remove(iid)
+        self._group_keep_iid[group_idx] = iid
 
     def _select_all_dupes(self):
         self._tree.selection_set([])
