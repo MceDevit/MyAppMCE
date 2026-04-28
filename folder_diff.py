@@ -40,6 +40,8 @@ FONT_SMALL = ("Verdana", 11)
 FONT_MONO  = ("Verdana", 10)
 FONT_BTN   = ("Verdana", 13, "bold")
 
+APP_NAME    = "Folder Differences"
+APP_VERSION = "v12"
 
 # ── PDF Report ────────────────────────────────────────────────────────────────
 
@@ -375,7 +377,7 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb, quick=False):
 class FolderDiffApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Folder Differences v11")
+        self.title(f"{APP_NAME} {APP_VERSION}")
         self.geometry("1300x860")
         self.minsize(1000, 680)
         self.configure(bg=BG)
@@ -945,7 +947,7 @@ class FolderDiffApp(tk.Tk):
             return
         vals = self._tree.item(iid, "values")
         tags = self._tree.item(iid, "tags")
-        if not vals or "section" in tags:
+        if not vals or any(tag.startswith("section") for tag in tags):
             return
         data = vals[3]
         path = data.split("||")[0] if "||" in data else data
@@ -1003,7 +1005,10 @@ class FolderDiffApp(tk.Tk):
             copied = []
             total = len(copyable)
             for i, (rel, src, _) in enumerate(copyable, 1):
-                dst = os.path.join(dest_folder, rel)
+                if os.path.isfile(dest_folder):
+                    dst = dest_folder
+                else:
+                    dst = os.path.join(dest_folder, rel)
                 try:
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     if move:
