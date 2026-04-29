@@ -39,7 +39,7 @@ FONT_MONO  = ("Verdana", 10)
 FONT_BTN   = ("Verdana", 13, "bold")
 
 APP_NAME    = "Folder Differences"
-APP_VERSION = "v13"
+APP_VERSION = "v17"
 
 # ── PDF Report ────────────────────────────────────────────────────────────────
 
@@ -376,7 +376,7 @@ class FolderDiffApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME} {APP_VERSION}")
-        self.geometry("1300x860")
+        self.geometry("1500x900")
         self.minsize(1000, 680)
         self.configure(bg=BG)
 
@@ -399,8 +399,10 @@ class FolderDiffApp(tk.Tk):
         self._size_b     = tk.StringVar(value="")
         self._iid_data   = {}   # iid -> dict (status, name, rel, data, tags)
         self._selectable_iids = []
+        self._anchor_iid      = None  # anchor for Shift+Arrow range selection
         self._matched_source = None  # set when a single-file match is found
         self._quick_check    = tk.BooleanVar(value=False)  # filenames-only mode
+
 
         self._build_ui()
 
@@ -492,6 +494,7 @@ class FolderDiffApp(tk.Tk):
         cols = ("status", "file", "rel_path", "action")
         self._tree = ttk.Treeview(results_frame, columns=cols,
                                    show="headings", selectmode="extended")
+        self._tree.bind("<<TreeviewSelect>>", lambda _: self._update_selection_count())
         style.configure("Treeview",
                          background=SURFACE, foreground=FG,
                          fieldbackground=SURFACE, rowheight=30,
@@ -540,7 +543,17 @@ class FolderDiffApp(tk.Tk):
         hsb.pack(side="bottom", fill="x")
         self._tree.pack(side="left", fill="both", expand=True)
 
-        self._tree.bind("<Double-1>", self._on_double_click)
+        self._tree.bind("<Double-1>",         self._on_double_click)
+        self._tree.bind("<Return>",            self._on_return_key)
+        self._tree.bind("<Command-a>",         self._on_select_all_key)
+        self._tree.bind("<Escape>",            lambda _: self._deselect_all())
+        self._tree.bind("<space>",             self._on_space_key)
+        self._tree.bind("<Button-1>",          lambda _: self.after(10, self._set_anchor_and_update))
+        self._tree.bind("<Shift-Button-1>",    lambda _: self.after(10, self._update_selection_count))
+        self._tree.bind("<KeyRelease-Up>",     self._on_plain_arrow_release)
+        self._tree.bind("<KeyRelease-Down>",   self._on_plain_arrow_release)
+        self._tree.bind("<Shift-Up>",          lambda _: self._on_shift_arrow("up"))
+        self._tree.bind("<Shift-Down>",        lambda _: self._on_shift_arrow("down"))
 
         # ── Copy buttons ──
         copy_bar = tk.Frame(self, bg=BG)
@@ -548,25 +561,23 @@ class FolderDiffApp(tk.Tk):
 
         self._make_btn(copy_bar, "→  Copy selected to Folder 1",
                        lambda: self._copy_selected("to_a"),
-                       bg=ONLY_A, fg="#ffffff", pad=(16, 0)).pack(side="left", padx=(0, 8))
+                       bg=ONLY_A, fg="#ffffff", pad=(10, 0)).pack(side="left", padx=(0, 6))
 
         self._make_btn(copy_bar, "←  Copy selected to Folder 2",
                        lambda: self._copy_selected("to_b"),
-                       bg=ONLY_B, fg="#ffffff", pad=(16, 0)).pack(side="left", padx=(0, 8))
+                       bg=ONLY_B, fg="#ffffff", pad=(10, 0)).pack(side="left", padx=(0, 6))
 
         self._make_btn(copy_bar, "⇒  Move selected to Folder 2",
                        lambda: self._copy_selected("to_b", move=True),
-                       bg=ACCENT, fg="#ffffff", pad=(16, 0)).pack(side="left", padx=(0, 8))
+                       bg=ONLY_B, fg="#ffffff", pad=(10, 0)).pack(side="left", padx=(0, 6))
 
-        tk.Frame(copy_bar, bg=BG).pack(side="left", expand=True)
+        self._make_btn(copy_bar, "⇐  Move selected to Folder 1",
+                       lambda: self._copy_selected("to_a", move=True),
+                       bg=ONLY_A, fg="#ffffff", pad=(10, 0)).pack(side="left", padx=(0, 6))
 
         self._make_btn(copy_bar, "Reveal in Finder",
                        self._reveal_selected,
-                       bg=CARD, fg=FG, pad=(14, 0)).pack(side="left", padx=(0, 8))
-
-        self._make_btn(copy_bar, "Select All",
-                       self._select_all,
-                       bg=CARD, fg=FG, pad=(14, 0)).pack(side="left", padx=(0, 8))
+                       bg=CARD, fg=FG, pad=(10, 0)).pack(side="left", padx=(0, 6))
 
         # ── PDF + Quit row ──
         bottom = tk.Frame(self, bg=BG)
@@ -765,6 +776,7 @@ class FolderDiffApp(tk.Tk):
         self._tree.delete(*self._tree.get_children())
         self._iid_data = {}
         self._selectable_iids = []
+        self._anchor_iid = None
         self._progress["value"] = 0
         self._progress_label.config(text="")
         self._compare_btn.config(text="  Compare Folders  ")
@@ -852,9 +864,108 @@ class FolderDiffApp(tk.Tk):
         else:
             self._progress_label.config(text="")
             self._progress["value"] = 0
+            self._update_selection_count()
             self.update_idletasks()
 
     # ── Selection ─────────────────────────────────────────────────────────────
+
+    def _on_plain_arrow_release(self, event):
+        """KeyRelease-Up/Down — only reset anchor when Shift is not held."""
+        if event.state & 0x0001:  # Shift modifier: skip so anchor stays fixed
+            return
+        self._set_anchor_and_update()
+
+    def _set_anchor_and_update(self):
+        """Called after plain arrow-key or click — update anchor to focused row."""
+        focused = self._tree.focus()
+        selectable = set(self._selectable_iids)
+        if focused and focused in selectable:
+            self._anchor_iid = focused
+        self._update_selection_count()
+
+    def _on_shift_arrow(self, direction):
+        """Shift+Up/Down — range-select from anchor to next selectable neighbour."""
+        children = list(self._tree.get_children())
+        focused = self._tree.focus()
+        if not focused or focused not in children:
+            return "break"
+
+        selectable = set(self._selectable_iids)
+        step = 1 if direction == "down" else -1
+
+        # Find the next selectable row in the given direction.
+        target = None
+        i = children.index(focused) + step
+        while 0 <= i < len(children):
+            if children[i] in selectable:
+                target = children[i]
+                break
+            i += step
+        if not target:
+            return "break"
+
+        self._tree.focus(target)
+        self._tree.see(target)
+
+        # If no anchor yet, establish one at the current focused row.
+        if self._anchor_iid is None or self._anchor_iid not in children:
+            self._anchor_iid = focused if focused in selectable else target
+
+        # Select exactly the contiguous range [anchor … target], deselecting
+        # anything outside it so moving back toward anchor shrinks the selection.
+        anchor_idx = children.index(self._anchor_iid)
+        target_idx = children.index(target)
+        lo, hi = min(anchor_idx, target_idx), max(anchor_idx, target_idx)
+        self._tree.selection_set(
+            [iid for iid in children[lo : hi + 1] if iid in selectable]
+        )
+        self._update_selection_count()
+        return "break"
+
+    def _on_return_key(self, _):
+        """Enter key — reveal the focused row in Finder."""
+        iid = self._tree.focus()
+        if not iid:
+            return
+        tags = self._tree.item(iid, "tags")
+        if any(tag.startswith("section") for tag in tags):
+            return
+        vals = self._tree.item(iid, "values")
+        if not vals:
+            return
+        data = vals[3]
+        path = data.split("||")[0] if "||" in data else data
+        if os.path.exists(path):
+            try:
+                subprocess.run(["open", "-R", path], timeout=5, check=False)
+            except Exception:
+                pass
+        return "break"
+
+    def _on_space_key(self, _):
+        """Space — toggle selection of the focused row and reset anchor."""
+        iid = self._tree.focus()
+        if not iid or iid not in self._selectable_iids:
+            return "break"
+        if iid in self._tree.selection():
+            self._tree.selection_remove(iid)
+        else:
+            self._tree.selection_add(iid)
+        self._anchor_iid = iid
+        self._update_selection_count()
+        return "break"
+
+    def _on_select_all_key(self, _):
+        """Cmd+A handler to select all selectable files."""
+        targets = list(self._selectable_iids)
+        if targets:
+            self._anchor_iid = None
+            self._tree.selection_set(targets)
+            self._update_selection_count()
+        return "break"
+
+    def _update_selection_count(self):
+        pass
 
     def _select_all(self):
         self._tree.selection_set([])
@@ -865,6 +976,11 @@ class FolderDiffApp(tk.Tk):
         self.update_idletasks()
         self.after(1, lambda: self._batch_select(targets, 0))
 
+    def _deselect_all(self):
+        """Clear all selections."""
+        self._tree.selection_set([])
+        self._update_selection_count()
+
     def _batch_select(self, iids, start, chunk=100):
         end = min(start + chunk, len(iids))
         self._tree.selection_add(*iids[start:end])
@@ -873,7 +989,7 @@ class FolderDiffApp(tk.Tk):
             self.update_idletasks()
             self.after(1, lambda: self._batch_select(iids, end, chunk))
         else:
-            self._progress_label.config(text=f"Selected {len(iids)} files.")
+            self._update_selection_count()
 
     def _get_selected_items(self):
         result = []
