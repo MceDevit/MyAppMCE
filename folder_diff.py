@@ -36,7 +36,7 @@ FONT_TITLE = ("Verdana", 22, "bold")
 FONT_LABEL = ("Verdana", 13)
 FONT_SMALL = ("Verdana", 11)
 FONT_MONO  = ("Verdana", 10)
-FONT_BTN   = ("Verdana", 13, "bold")
+FONT_BTN   = ("Verdana", 10, "bold")
 
 APP_NAME    = "Folder Differences"
 APP_VERSION = "v17"
@@ -312,14 +312,16 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb, quick=False):
     different = {}
     total = len(common)
 
-    # Quick mode: filename-only — common files are assumed identical
+    # Quick mode: assume all common filenames are identical (no content check)
     if quick:
         progress_cb(total, max(total, 1), "")
-        done_cb(only_a, only_b, different, {})
+        identical_q = {rel: (files_a[rel], files_b[rel]) for rel in common}
+        done_cb(only_a, only_b, different, {}, identical_q)
         return
 
     if total == 0:
-        done_cb(only_a, only_b, different, {})
+        identical_all = {rel: (files_a[rel], files_b[rel]) for rel in common}
+        done_cb(only_a, only_b, different, {}, identical_all)
         return
 
     # Stage 0: skip files whose sizes differ (cheap, no read)
@@ -367,7 +369,9 @@ def compare_folders(folder_a, folder_b, progress_cb, done_cb, quick=False):
             progress_cb(n_quick + full_done, overall_total, rel)
             last = full_done
 
-    done_cb(only_a, only_b, different, {})
+    identical = {rel: (files_a[rel], files_b[rel])
+                 for rel in common if rel not in different}
+    done_cb(only_a, only_b, different, {}, identical)
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -393,6 +397,8 @@ class FolderDiffApp(tk.Tk):
         self._only_a     = {}
         self._only_b     = {}
         self._different  = {}
+        self._identical  = None   # None = not yet compared; {} = compared, none found
+        self._view_mode  = tk.StringVar(value="diff")
         self._pdf_var    = tk.BooleanVar(value=True)
         self._comparing  = False  # prevent concurrent compare operations
         self._size_a     = tk.StringVar(value="")
@@ -453,6 +459,16 @@ class FolderDiffApp(tk.Tk):
             relief="flat", bd=0, cursor="hand2"
         ).pack(side="left", padx=(20, 0))
 
+        tk.Frame(btn_row, bg=BG).pack(side="left", expand=True)
+        for label, value in [("Differences", "diff"), ("Identical", "identical")]:
+            tk.Radiobutton(
+                btn_row, text=label, variable=self._view_mode, value=value,
+                command=self._rerender,
+                font=FONT_SMALL, bg=BG, fg=FG_DIM,
+                selectcolor=BG, activebackground=BG, activeforeground=FG,
+                relief="flat", bd=0, cursor="hand2",
+            ).pack(side="left", padx=(0, 12))
+
         # ── Progress ──
         prog_frame = tk.Frame(self, bg=BG)
         prog_frame.pack(fill="x", padx=28, pady=(10, 0))
@@ -509,9 +525,9 @@ class FolderDiffApp(tk.Tk):
         self._tree.heading("rel_path", text="Relative Path")
         self._tree.heading("action",   text="")
 
-        self._tree.column("status",   width=150,  minwidth=150,  stretch=False)
+        self._tree.column("status",   width=180,  minwidth=180,  stretch=False)
         self._tree.column("file",     width=280,  minwidth=280,  stretch=False)
-        self._tree.column("rel_path", width=800,  minwidth=800,  stretch=False)
+        self._tree.column("rel_path", width=800,  minwidth=400,  stretch=True)
         self._tree.column("action",   width=0,    stretch=False)  # hidden data col
 
         self._tree.tag_configure("only_a",  foreground=ONLY_A)
@@ -559,25 +575,29 @@ class FolderDiffApp(tk.Tk):
         copy_bar = tk.Frame(self, bg=BG)
         copy_bar.pack(fill="x", padx=28, pady=(10, 0))
 
-        self._make_btn(copy_bar, "→  Copy selected to Folder 1",
+        self._make_btn(copy_bar, "→ Copy to Folder 1",
                        lambda: self._copy_selected("to_a"),
-                       bg=ONLY_A, fg="#ffffff", pad=(10, 0)).pack(side="left", padx=(0, 6))
+                       bg=ONLY_A, fg="#ffffff").pack(side="left", padx=(0, 5))
 
-        self._make_btn(copy_bar, "←  Copy selected to Folder 2",
+        self._make_btn(copy_bar, "← Copy to Folder 2",
                        lambda: self._copy_selected("to_b"),
-                       bg=ONLY_B, fg="#ffffff", pad=(10, 0)).pack(side="left", padx=(0, 6))
+                       bg=ONLY_B, fg="#ffffff").pack(side="left", padx=(0, 5))
 
-        self._make_btn(copy_bar, "⇒  Move selected to Folder 2",
+        self._make_btn(copy_bar, "⇒ Move to Folder 2",
                        lambda: self._copy_selected("to_b", move=True),
-                       bg=ONLY_B, fg="#ffffff", pad=(10, 0)).pack(side="left", padx=(0, 6))
+                       bg=ONLY_B, fg="#ffffff").pack(side="left", padx=(0, 5))
 
-        self._make_btn(copy_bar, "⇐  Move selected to Folder 1",
+        self._make_btn(copy_bar, "⇐ Move to Folder 1",
                        lambda: self._copy_selected("to_a", move=True),
-                       bg=ONLY_A, fg="#ffffff", pad=(10, 0)).pack(side="left", padx=(0, 6))
+                       bg=ONLY_A, fg="#ffffff").pack(side="left", padx=(0, 5))
+
+        self._make_btn(copy_bar, "🗑  Move to Trash",
+                       self._move_selected_to_trash,
+                       bg=DANGER, fg="#ffffff").pack(side="left", padx=(0, 5))
 
         self._make_btn(copy_bar, "Reveal in Finder",
                        self._reveal_selected,
-                       bg=CARD, fg=FG, pad=(10, 0)).pack(side="left", padx=(0, 6))
+                       bg=CARD, fg=FG).pack(side="left", padx=(0, 5))
 
         # ── PDF + Quit row ──
         bottom = tk.Frame(self, bg=BG)
@@ -596,7 +616,7 @@ class FolderDiffApp(tk.Tk):
 
         tk.Frame(bottom, bg=BG).pack(side="left", expand=True)
         self._make_btn(bottom, "✕  Quit", self.destroy,
-                       bg=CARD, fg=FG_DIM, pad=(14, 0)).pack(side="right")
+                       bg=CARD, fg=FG_DIM, pad=(8, 0)).pack(side="right")
 
     def _build_folder_row(self, parent, label, var, browse_cmd, color, size_var,
                           browse_folder_cmd=None):
@@ -616,21 +636,24 @@ class FolderDiffApp(tk.Tk):
                          highlightbackground=BORDER, highlightcolor=color)
         entry.pack(side="left", fill="x", expand=True, ipady=7, padx=(8, 10))
 
-        tk.Label(row, textvariable=size_var, font=FONT_SMALL,
+        tk.Label(row, textvariable=size_var, font=FONT_LABEL,
                  bg=BG, fg=color, width=10, anchor="e").pack(side="left", padx=(0, 8))
 
         file_label = "File…" if browse_folder_cmd else "Browse…"
         self._make_btn(row, file_label, browse_cmd,
-                       bg=CARD, fg=FG, pad=(14, 0)).pack(side="left")
+                       bg=CARD, fg=FG, pad=(8, 0)).pack(side="left")
         if browse_folder_cmd:
             self._make_btn(row, "Folder…", browse_folder_cmd,
-                           bg=CARD, fg=FG, pad=(14, 0)).pack(side="left", padx=(6, 0))
+                           bg=CARD, fg=FG, pad=(8, 0)).pack(side="left", padx=(6, 0))
+        else:
+            # Spacer matching the width of the missing second button so both rows align
+            tk.Frame(row, bg=BG, width=74).pack(side="left", padx=(6, 0))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _make_btn(self, parent, text, cmd, bg=CARD, fg=FG, pad=(14, 0)):
+    def _make_btn(self, parent, text, cmd, bg=CARD, fg=FG, pad=(8, 0)):
         btn = tk.Label(parent, text=text, font=FONT_BTN,
-                       bg=bg, fg=fg, cursor="hand2", padx=pad[0], pady=7)
+                       bg=bg, fg=fg, cursor="hand2", padx=pad[0], pady=4)
         btn.bind("<Button-1>", lambda e: cmd())
         btn.bind("<Enter>",    lambda e: btn.config(bg=self._lighten(bg)))
         btn.bind("<Leave>",    lambda e: btn.config(bg=bg))
@@ -647,6 +670,22 @@ class FolderDiffApp(tk.Tk):
     def _clear_stats(self):
         for w in self._stats_frame.winfo_children():
             w.destroy()
+
+    def _identical_size(self):
+        """Return human-readable total size of identical files (folder 1 copy)."""
+        if not self._identical:
+            return ""
+        total = 0
+        for abs_a, _ in self._identical.values():
+            try:
+                total += os.path.getsize(abs_a)
+            except OSError:
+                pass
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if total < 1024:
+                return f"{total:.1f} {unit}"
+            total /= 1024
+        return f"{total:.1f} TB"
 
     def _add_stat(self, label, value, color=FG):
         f = tk.Frame(self._stats_frame, bg=BG)
@@ -740,6 +779,7 @@ class FolderDiffApp(tk.Tk):
         self._tree.delete(*self._tree.get_children())
         self._iid_data = {}
         self._selectable_iids = []
+        self._identical = None
         for w in self._match_actions.winfo_children():
             w.destroy()
         self._match_actions.pack_forget()
@@ -757,8 +797,8 @@ class FolderDiffApp(tk.Tk):
             self.after(0, lambda n=Path(name).name:
                 self._progress_label.config(text=f"Checking: {n}"))
 
-        def on_done(only_a, only_b, different, matched):
-            self.after(0, lambda: self._render(only_a, only_b, different, matched))
+        def on_done(only_a, only_b, different, matched, identical=None):
+            self.after(0, lambda: self._render(only_a, only_b, different, matched, identical or {}))
 
         quick = bool(self._quick_check.get())
         threading.Thread(target=compare_folders,
@@ -766,19 +806,14 @@ class FolderDiffApp(tk.Tk):
                          kwargs={"quick": quick},
                          daemon=True).start()
 
-    def _render(self, only_a, only_b, different, matched=None):
+    def _render(self, only_a, only_b, different, matched=None, identical=None):
         self._comparing = False
         self._only_a    = only_a
         self._only_b    = only_b
         self._different = different
+        self._identical = identical if identical is not None else {}
         matched = matched or {}
 
-        self._tree.delete(*self._tree.get_children())
-        self._iid_data = {}
-        self._selectable_iids = []
-        self._anchor_iid = None
-        self._progress["value"] = 0
-        self._progress_label.config(text="")
         self._compare_btn.config(text="  Compare Folders  ")
 
         # Reset match-action bar
@@ -792,9 +827,9 @@ class FolderDiffApp(tk.Tk):
                 self._matched_source = src_path
                 self._make_btn(
                     self._match_actions,
-                    f"🗑  Delete “{Path(src_path).name}” from Folder 1 (it exists in Folder 2)",
+                    f'🗑  Delete "{Path(src_path).name}" from Folder 1 (it exists in Folder 2)',
                     self._delete_matched_source,
-                    bg=DANGER, fg="#ffffff", pad=(16, 0),
+                    bg=DANGER, fg="#ffffff", pad=(8, 0),
                 ).pack(side="left")
                 self._match_actions.pack(fill="x", padx=28, pady=(6, 0),
                                           before=self._tree.master)
@@ -802,46 +837,71 @@ class FolderDiffApp(tk.Tk):
         self._clear_stats()
         total = len(only_a) + len(only_b) + len(different)
         match_count = sum(len(v) for v in matched.values())
-        self._add_stat("Only in Folder 1", str(len(only_a)),    ONLY_A)
-        self._add_stat("Only in Folder 2", str(len(only_b)),    ONLY_B)
-        self._add_stat("Differences", str(len(different)), DIFF)
-        self._add_stat("Total differences", str(total),          ACCENT)
+        self._add_stat("Only in Folder 1",  str(len(only_a)),         ONLY_A)
+        self._add_stat("Only in Folder 2",  str(len(only_b)),         ONLY_B)
+        self._add_stat("Differences",       str(len(different)),       DIFF)
+        self._add_stat("Total differences", str(total),                ACCENT)
+        id_size = self._identical_size()
+        id_label = f"{len(self._identical)}  ({id_size})" if id_size else str(len(self._identical))
+        self._add_stat("Identical", id_label, "#4caf50")
         if matched:
             self._add_stat("Matches in Folder 2", str(match_count), ONLY_B)
 
-        if total == 0 and not matched:
-            self._tree.insert("", "end",
-                               values=("✅  Folders are identical", "", "", ""),
-                               tags=("section",))
-            return
+        self._rerender(matched=matched)
 
-        # Build all rows up front, insert in batches
-        rows = []
-        if matched:
-            for src_name, paths in matched.items():
-                rows.append(("section_b",
-                             (f"── Match found in Folder 2 for “{src_name}”  ({len(paths)} file(s))", "", "", "")))
-                for p in paths:
-                    rows.append(("only_b",
-                                 ("Match in Folder 2", Path(p).name, p, p)))
-        if only_a:
-            rows.append(("section_a",
-                         (f"── Only in Folder 1  ({len(only_a)} files)", "", "", "")))
+    def _rerender(self, matched=None):
+        """Re-build the tree from cached data for the current view mode."""
+        matched = matched or {}
+
+        self._tree.delete(*self._tree.get_children())
+        self._iid_data = {}
+        self._selectable_iids = []
+        self._anchor_iid = None
+        self._progress["value"] = 0
+        self._progress_label.config(text="")
+
+        mode = self._view_mode.get()
+
+        if mode == "identical":
+            rows = []
+            if self._identical is None:
+                self._tree.insert("", "end",
+                                  values=("Run a comparison first", "", "", ""),
+                                  tags=("section",))
+                return
+            if not self._identical:
+                self._tree.insert("", "end",
+                                  values=("No identical files found", "", "", ""),
+                                  tags=("section",))
+                return
+            sorted_items = sorted(self._identical.items())
+            for rel, (abs_a, _) in sorted_items:
+                rows.append(("only_a", ("Identical", Path(rel).name, rel, abs_a)))
+            for rel, (_, abs_b) in sorted_items:
+                rows.append(("only_b", ("Identical", Path(rel).name, rel, abs_b)))
+        else:
+            only_a    = self._only_a
+            only_b    = self._only_b
+            different = self._different
+            total     = len(only_a) + len(only_b) + len(different)
+
+            if total == 0 and not matched:
+                self._tree.insert("", "end",
+                                  values=("✅  Folders are identical", "", "", ""),
+                                  tags=("section",))
+                return
+
+            rows = []
+            if matched:
+                for _, paths in matched.items():
+                    for p in paths:
+                        rows.append(("only_b", ("Match in Folder 2", Path(p).name, p, p)))
             for rel, abs_p in sorted(only_a.items()):
-                rows.append(("only_a",
-                             ("Only in Folder 1", Path(rel).name, rel, abs_p)))
-        if only_b:
-            rows.append(("section_b",
-                         (f"── Only in Folder 2  ({len(only_b)} files)", "", "", "")))
+                rows.append(("only_a", ("Only in Folder 1", Path(rel).name, rel, abs_p)))
             for rel, abs_p in sorted(only_b.items()):
-                rows.append(("only_b",
-                             ("Only in Folder 2", Path(rel).name, rel, abs_p)))
-        if different:
-            rows.append(("section_diff",
-                         (f"── Differences  ({len(different)} files)", "", "", "")))
+                rows.append(("only_b", ("Only in Folder 2", Path(rel).name, rel, abs_p)))
             for rel, (abs_a, abs_b) in sorted(different.items()):
-                rows.append(("diff",
-                             ("Differences", Path(rel).name, rel, f"{abs_a}||{abs_b}")))
+                rows.append(("diff", ("Differences", Path(rel).name, rel, f"{abs_a}||{abs_b}")))
 
         self._progress_label.config(text=f"Loading… 0 / {len(rows)}")
         self.update_idletasks()
@@ -1016,7 +1076,7 @@ class FolderDiffApp(tk.Tk):
             return
         if not messagebox.askyesno(
             "Move to Trash",
-            f"Move “{Path(src).name}” to the Trash?\n\n"
+            f"Move \"{Path(src).name}\" to the Trash?\n\n"
             f"The matching file in Folder 2 will be kept.\n"
             f"This can be undone from the Trash.",
             icon="warning",
@@ -1061,6 +1121,56 @@ class FolderDiffApp(tk.Tk):
                     subprocess.run(["open", "-R", path], timeout=5, check=False)
                 except Exception:
                     pass
+
+    def _move_selected_to_trash(self):
+        items = self._get_selected_items()
+        if not items:
+            messagebox.showinfo("Nothing selected", "Select one or more files first.")
+            return
+
+        paths = []
+        for item in items:
+            data = item["data"]
+            path = data.split("||")[0] if "||" in data else data
+            if os.path.exists(path):
+                paths.append(path)
+
+        if not paths:
+            messagebox.showinfo("Nothing to trash", "None of the selected files exist on disk.")
+            return
+
+        names = "\n".join(f"  • {Path(p).name}" for p in paths[:10])
+        if len(paths) > 10:
+            names += f"\n  … and {len(paths) - 10} more"
+        if not messagebox.askyesno(
+            "Move to Trash",
+            f"Move {len(paths)} file(s) to the Trash?\n\n{names}\n\nThis can be undone from the Trash.",
+        ):
+            return
+
+        errors = []
+        def _do_trash():
+            for p in paths:
+                script = f'tell application "Finder" to delete POSIX file "{p}"'
+                result = subprocess.run(
+                    ["osascript", "-e", script],
+                    capture_output=True, timeout=15
+                )
+                if result.returncode != 0:
+                    errors.append(p)
+            self.after(0, _on_done)
+
+        def _on_done():
+            if errors:
+                messagebox.showwarning(
+                    "Some errors",
+                    f"Could not trash {len(errors)} file(s):\n" +
+                    "\n".join(f"  • {Path(p).name}" for p in errors[:5])
+                )
+            self._start_compare()
+
+        self._progress_label.config(text=f"Moving {len(paths)} file(s) to Trash…")
+        threading.Thread(target=_do_trash, daemon=True).start()
 
     # ── Double-click ──────────────────────────────────────────────────────────
 
