@@ -403,15 +403,10 @@ def find_duplicates_by_name(folder, progress_cb, done_cb):
 class DuplicateFinderApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Duplicate Finder v6")
+        self.title("Duplicates Finder v6")
         self.geometry("1200x780")
         self.minsize(1000, 600)
         self.configure(bg=BG)
-
-        try:
-            self.tk.call("::tk::unsupported::MacWindowStyle", "style", self._w, "document", "")
-        except Exception:
-            pass
 
         self._selected_folder = tk.StringVar(value="")
         self._dupes = {}
@@ -430,9 +425,9 @@ class DuplicateFinderApp(tk.Tk):
             menubar = tk.Menu(self)
             app_menu = tk.Menu(menubar, name="apple")
             menubar.add_cascade(menu=app_menu)
-            app_menu.add_command(label="About Duplicate Finder")
+            app_menu.add_command(label="About Duplicates Finder")
             app_menu.add_separator()
-            app_menu.add_command(label="Quit Duplicate Finder",
+            app_menu.add_command(label="Quit Duplicates Finder",
                                   command=self.destroy, accelerator="Cmd+Q")
             self.config(menu=menubar)
             self.bind_all("<Command-q>", lambda e: self.destroy())
@@ -443,7 +438,7 @@ class DuplicateFinderApp(tk.Tk):
         # Header
         header = tk.Frame(self, bg=BG)
         header.pack(fill="x", padx=28, pady=(24, 0))
-        tk.Label(header, text="⊜  Duplicate Finder",
+        tk.Label(header, text="⊜  Duplicates Finder",
                  font=FONT_TITLE, bg=BG, fg=FG).pack(side="left")
 
         # Folder picker
