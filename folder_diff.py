@@ -866,12 +866,12 @@ class FolderDiffApp(tk.Tk):
             rows = []
             if self._identical is None:
                 self._tree.insert("", "end",
-                                  values=("Run a comparison first", "", "", ""),
+                                  values=("", "Run a comparison first", "", ""),
                                   tags=("section",))
                 return
             if not self._identical:
                 self._tree.insert("", "end",
-                                  values=("No identical files found", "", "", ""),
+                                  values=("", "No identical files found", "", ""),
                                   tags=("section",))
                 return
             sorted_items = sorted(self._identical.items())
@@ -887,7 +887,7 @@ class FolderDiffApp(tk.Tk):
 
             if total == 0 and not matched:
                 self._tree.insert("", "end",
-                                  values=("✅  Folders are identical", "", "", ""),
+                                  values=("", "✅  Folders are identical", "", ""),
                                   tags=("section",))
                 return
 
