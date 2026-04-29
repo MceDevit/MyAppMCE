@@ -21,9 +21,7 @@ BG        = "#0a0a0a"   # near-black background
 SURFACE   = "#141414"   # dark surface
 CARD      = "#1e1e1e"   # slightly lighter card
 ACCENT    = "#ff6d00"   # vivid orange — neutral UI accent (not folder 1 or 2)
-ACCENT2   = "#ffab40"   # lighter orange for hover/highlights
 DANGER    = "#ff1744"   # bright red — good on dark
-SUCCESS   = "#00e676"   # neon green — readable on dark
 MUTED     = "#757575"   # mid grey
 FG        = "#f5f5f5"   # near-white — max contrast
 FG_DIM    = "#9e9e9e"   # grey — secondary text
@@ -41,7 +39,7 @@ FONT_MONO  = ("Verdana", 10)
 FONT_BTN   = ("Verdana", 13, "bold")
 
 APP_NAME    = "Folder Differences"
-APP_VERSION = "v12"
+APP_VERSION = "v13"
 
 # ── PDF Report ────────────────────────────────────────────────────────────────
 
@@ -395,8 +393,8 @@ class FolderDiffApp(tk.Tk):
         self._only_a     = {}
         self._only_b     = {}
         self._different  = {}
-        self._copied     = []   # log for PDF
         self._pdf_var    = tk.BooleanVar(value=True)
+        self._comparing  = False  # prevent concurrent compare operations
         self._size_a     = tk.StringVar(value="")
         self._size_b     = tk.StringVar(value="")
         self._iid_data   = {}   # iid -> dict (status, name, rel, data, tags)
@@ -713,6 +711,9 @@ class FolderDiffApp(tk.Tk):
     # ── Compare ───────────────────────────────────────────────────────────────
 
     def _start_compare(self):
+        if self._comparing:
+            return
+        
         a = self._real_a or self._folder_a.get().strip()
         b = self._real_b or self._folder_b.get().strip()
 
@@ -722,6 +723,8 @@ class FolderDiffApp(tk.Tk):
         if not b or not os.path.isdir(b):
             messagebox.showwarning("Missing folder", "Please choose Folder 2 first.")
             return
+        
+        self._comparing = True
 
         self._tree.delete(*self._tree.get_children())
         self._iid_data = {}
@@ -753,6 +756,7 @@ class FolderDiffApp(tk.Tk):
                          daemon=True).start()
 
     def _render(self, only_a, only_b, different, matched=None):
+        self._comparing = False
         self._only_a    = only_a
         self._only_b    = only_b
         self._different = different
@@ -937,7 +941,10 @@ class FolderDiffApp(tk.Tk):
             data = item["data"]
             path = data.split("||")[0] if "||" in data else data
             if os.path.exists(path):
-                subprocess.run(["open", "-R", path])
+                try:
+                    subprocess.run(["open", "-R", path], timeout=5, check=False)
+                except Exception:
+                    pass
 
     # ── Double-click ──────────────────────────────────────────────────────────
 
@@ -952,7 +959,10 @@ class FolderDiffApp(tk.Tk):
         data = vals[3]
         path = data.split("||")[0] if "||" in data else data
         if os.path.exists(path):
-            subprocess.run(["open", "-R", path])
+            try:
+                subprocess.run(["open", "-R", path], timeout=5, check=False)
+            except Exception:
+                pass
 
     # ── Copy ──────────────────────────────────────────────────────────────────
 
@@ -966,6 +976,14 @@ class FolderDiffApp(tk.Tk):
         dest_folder = self._real_a if direction == "to_a" else self._real_b
         dest_label  = "Folder 1" if direction == "to_a" else "Folder 2"
         verb        = "Move" if move else "Copy"
+        
+        if os.path.isfile(dest_folder):
+            messagebox.showwarning(
+                "Invalid destination",
+                "Cannot copy files to a single file destination. "
+                "Please choose a folder for " + dest_label + "."
+            )
+            return
 
         # Validate copyable items
         copyable = []
@@ -1005,10 +1023,7 @@ class FolderDiffApp(tk.Tk):
             copied = []
             total = len(copyable)
             for i, (rel, src, _) in enumerate(copyable, 1):
-                if os.path.isfile(dest_folder):
-                    dst = dest_folder
-                else:
-                    dst = os.path.join(dest_folder, rel)
+                dst = os.path.join(dest_folder, rel)
                 try:
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     if move:
